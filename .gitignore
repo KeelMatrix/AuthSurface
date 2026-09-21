@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+artifacts/
+.vs/
+.idea/
+TestResults/
+*.user
+*.suo
+*.nupkg
+*.snupkg
+*.userprefs
+*.env
+*.env.*
+authsurface.json

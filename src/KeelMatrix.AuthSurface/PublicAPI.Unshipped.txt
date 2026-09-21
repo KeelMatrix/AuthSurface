@@ -1,0 +1,65 @@
+#nullable enable
+const KeelMatrix.AuthSurface.AuthSurfaceBaseline.CurrentSchemaVersion = 1 -> int
+KeelMatrix.AuthSurface.AuthSurfaceAnalysisException
+KeelMatrix.AuthSurface.AuthSurfaceAnalysisException.Code.get -> string!
+KeelMatrix.AuthSurface.AuthSurfaceAuthorizationKind
+KeelMatrix.AuthSurface.AuthSurfaceAuthorizationKind.ExplicitAnonymous = 0 -> KeelMatrix.AuthSurface.AuthSurfaceAuthorizationKind
+KeelMatrix.AuthSurface.AuthSurfaceAuthorizationKind.ExplicitProtected = 1 -> KeelMatrix.AuthSurface.AuthSurfaceAuthorizationKind
+KeelMatrix.AuthSurface.AuthSurfaceAuthorizationKind.FallbackProtected = 2 -> KeelMatrix.AuthSurface.AuthSurfaceAuthorizationKind
+KeelMatrix.AuthSurface.AuthSurfaceAuthorizationKind.Unprotected = 3 -> KeelMatrix.AuthSurface.AuthSurfaceAuthorizationKind
+KeelMatrix.AuthSurface.AuthSurfaceBaseline
+KeelMatrix.AuthSurface.AuthSurfaceBaseline.Endpoints.get -> System.Collections.Generic.IReadOnlyList<KeelMatrix.AuthSurface.AuthSurfaceEndpoint!>!
+KeelMatrix.AuthSurface.AuthSurfaceBaseline.SchemaVersion.get -> int
+KeelMatrix.AuthSurface.AuthSurfaceBaseline.Write(string! path, bool overwrite) -> void
+KeelMatrix.AuthSurface.AuthSurfaceBaselineException
+KeelMatrix.AuthSurface.AuthSurfaceBaselineException.Code.get -> string!
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint.AuthenticationSchemes.get -> System.Collections.Generic.IReadOnlyList<string!>!
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint.AuthorizationKind.get -> KeelMatrix.AuthSurface.AuthSurfaceAuthorizationKind
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint.Methods.get -> System.Collections.Generic.IReadOnlyList<string!>!
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint.Policies.get -> System.Collections.Generic.IReadOnlyList<string!>!
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint.RequirementFingerprint.get -> string!
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint.Requirements.get -> System.Collections.Generic.IReadOnlyList<string!>!
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint.Roles.get -> System.Collections.Generic.IReadOnlyList<string!>!
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint.Route.get -> string!
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint.UsesDefaultPolicy.get -> bool
+KeelMatrix.AuthSurface.AuthSurfaceEndpoint.UsesFallbackPolicy.get -> bool
+KeelMatrix.AuthSurface.AuthSurfaceReport
+KeelMatrix.AuthSurface.AuthSurfaceReport.AssertPolicyCompliant() -> void
+KeelMatrix.AuthSurface.AuthSurfaceReport.Endpoints.get -> System.Collections.Generic.IReadOnlyList<KeelMatrix.AuthSurface.AuthSurfaceEndpoint!>!
+KeelMatrix.AuthSurface.AuthSurfaceReport.IsPolicyCompliant.get -> bool
+KeelMatrix.AuthSurface.AuthSurfaceReport.PolicyViolations.get -> System.Collections.Generic.IReadOnlyList<KeelMatrix.AuthSurface.AuthSurfaceViolation!>!
+KeelMatrix.AuthSurface.AuthSurfaceScanner
+KeelMatrix.AuthSurface.AuthSurfaceScanner.AuthSurfaceScanner(System.Collections.Generic.IEnumerable<Microsoft.AspNetCore.Routing.EndpointDataSource!>! endpointDataSources, Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider! policyProvider) -> void
+KeelMatrix.AuthSurface.AuthSurfaceScanner.AuthSurfaceScanner(System.IServiceProvider! services) -> void
+KeelMatrix.AuthSurface.AuthSurfaceScanner.ScanAsync(KeelMatrix.AuthSurface.AuthSurfaceScanOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<KeelMatrix.AuthSurface.AuthSurfaceReport!>!
+KeelMatrix.AuthSurface.AuthSurfaceScanOptions
+KeelMatrix.AuthSurface.AuthSurfaceScanOptions.AddExcludedRoutePattern(string! routePattern) -> void
+KeelMatrix.AuthSurface.AuthSurfaceScanOptions.AuthSurfaceScanOptions(System.Collections.Generic.IEnumerable<string!>? excludedRoutePatterns = null, bool strictFallbackPolicy = false) -> void
+KeelMatrix.AuthSurface.AuthSurfaceScanOptions.EndpointFilter.get -> System.Func<Microsoft.AspNetCore.Routing.RouteEndpoint!, bool>?
+KeelMatrix.AuthSurface.AuthSurfaceScanOptions.EndpointFilter.set -> void
+KeelMatrix.AuthSurface.AuthSurfaceScanOptions.ExcludedRoutePatterns.get -> System.Collections.Generic.IReadOnlySet<string!>!
+KeelMatrix.AuthSurface.AuthSurfaceScanOptions.StrictFallbackPolicy.get -> bool
+KeelMatrix.AuthSurface.AuthSurfaceScanOptions.StrictFallbackPolicy.set -> void
+KeelMatrix.AuthSurface.AuthSurfaceVerificationException
+KeelMatrix.AuthSurface.AuthSurfaceVerificationException.Result.get -> KeelMatrix.AuthSurface.AuthSurfaceVerificationResult!
+KeelMatrix.AuthSurface.AuthSurfaceVerificationResult
+KeelMatrix.AuthSurface.AuthSurfaceVerificationResult.AssertValid() -> void
+KeelMatrix.AuthSurface.AuthSurfaceVerificationResult.IsValid.get -> bool
+KeelMatrix.AuthSurface.AuthSurfaceVerificationResult.UsedBaseline.get -> bool
+KeelMatrix.AuthSurface.AuthSurfaceVerificationResult.Violations.get -> System.Collections.Generic.IReadOnlyList<KeelMatrix.AuthSurface.AuthSurfaceViolation!>!
+KeelMatrix.AuthSurface.AuthSurfaceVerifier
+KeelMatrix.AuthSurface.AuthSurfaceViolation
+KeelMatrix.AuthSurface.AuthSurfaceViolation.Actual.get -> string?
+KeelMatrix.AuthSurface.AuthSurfaceViolation.Code.get -> string!
+KeelMatrix.AuthSurface.AuthSurfaceViolation.Expected.get -> string?
+KeelMatrix.AuthSurface.AuthSurfaceViolation.Message.get -> string!
+KeelMatrix.AuthSurface.AuthSurfaceViolation.Method.get -> string?
+KeelMatrix.AuthSurface.AuthSurfaceViolation.Route.get -> string?
+override KeelMatrix.AuthSurface.AuthSurfaceViolation.ToString() -> string!
+static KeelMatrix.AuthSurface.AuthSurfaceBaseline.Create(KeelMatrix.AuthSurface.AuthSurfaceReport! report) -> KeelMatrix.AuthSurface.AuthSurfaceBaseline!
+static KeelMatrix.AuthSurface.AuthSurfaceBaseline.Create(KeelMatrix.AuthSurface.AuthSurfaceReport! report, string! path, bool overwrite) -> KeelMatrix.AuthSurface.AuthSurfaceBaseline!
+static KeelMatrix.AuthSurface.AuthSurfaceBaseline.Read(string! path, int maximumBytes = 1048576) -> KeelMatrix.AuthSurface.AuthSurfaceBaseline!
+static KeelMatrix.AuthSurface.AuthSurfaceVerifier.Compare(KeelMatrix.AuthSurface.AuthSurfaceReport! report, KeelMatrix.AuthSurface.AuthSurfaceBaseline! baseline) -> KeelMatrix.AuthSurface.AuthSurfaceVerificationResult!
+static KeelMatrix.AuthSurface.AuthSurfaceVerifier.Compare(KeelMatrix.AuthSurface.AuthSurfaceReport! report, string! baselinePath) -> KeelMatrix.AuthSurface.AuthSurfaceVerificationResult!
+static KeelMatrix.AuthSurface.AuthSurfaceVerifier.VerifyPolicy(KeelMatrix.AuthSurface.AuthSurfaceReport! report) -> KeelMatrix.AuthSurface.AuthSurfaceVerificationResult!
