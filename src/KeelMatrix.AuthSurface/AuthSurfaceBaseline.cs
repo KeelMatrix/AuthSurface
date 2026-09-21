@@ -91,6 +91,8 @@ public sealed class AuthSurfaceBaseline
                 exception);
         }
 
+        ValidateJsonSyntaxBeforeDepth(bytes);
+
         JsonDocument jsonDocument;
         try
         {
@@ -255,6 +257,79 @@ public sealed class AuthSurfaceBaseline
         "requirementFingerprint",
     ];
 
+    private static void ValidateJsonSyntaxBeforeDepth(byte[] bytes)
+    {
+        if (bytes.All(static value => value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n'))
+        {
+            throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline is empty or contains only whitespace.");
+        }
+
+        JsonReaderOptions options = new()
+        {
+            CommentHandling = JsonCommentHandling.Disallow,
+            AllowTrailingCommas = false,
+            MaxDepth = Math.Max(bytes.Length, 1),
+        };
+
+        Utf8JsonReader reader = new(bytes, options);
+        try
+        {
+            bool hasValue = false;
+            while (reader.Read())
+            {
+                hasValue = true;
+            }
+
+            if (!hasValue)
+            {
+                throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline is empty or contains only whitespace.");
+            }
+        }
+        catch (AuthSurfaceBaselineException)
+        {
+            throw;
+        }
+        catch (JsonException exception)
+        {
+            bool truncated = IsAtEndOfPayload(bytes, exception);
+            string code = truncated ? "baseline-truncated" : "baseline-malformed";
+            string message = truncated
+                ? "The baseline ends before its JSON document is complete."
+                : "The baseline is not valid JSON.";
+            throw new AuthSurfaceBaselineException(code, message, exception);
+        }
+    }
+
+    private static bool IsAtEndOfPayload(byte[] bytes, JsonException exception)
+    {
+        if (!exception.LineNumber.HasValue || !exception.BytePositionInLine.HasValue ||
+            exception.LineNumber.Value < 0 || exception.BytePositionInLine.Value < 0)
+        {
+            return false;
+        }
+
+        long line = 0;
+        long lineStart = 0;
+        for (int index = 0; index < bytes.Length; index++)
+        {
+            if (bytes[index] != (byte)'\n')
+            {
+                continue;
+            }
+
+            if (line == exception.LineNumber.Value)
+            {
+                return lineStart + exception.BytePositionInLine.Value >= bytes.Length;
+            }
+
+            line++;
+            lineStart = index + 1;
+        }
+
+        return line == exception.LineNumber.Value &&
+            lineStart + exception.BytePositionInLine.Value >= bytes.Length;
+    }
+
     private static void ValidateSchema(JsonElement root)
     {
         if (root.ValueKind != JsonValueKind.Object)
@@ -307,6 +382,17 @@ public sealed class AuthSurfaceBaseline
         string errorCode,
         string scope)
     {
+        HashSet<string> seenFields = new(StringComparer.Ordinal);
+        foreach (JsonProperty property in value.EnumerateObject())
+        {
+            if (!seenFields.Add(property.Name))
+            {
+                throw new AuthSurfaceBaselineException(
+                    "baseline-duplicate-field",
+                    $"The baseline field '{property.Name}' is duplicated at {scope}.");
+            }
+        }
+
         foreach (JsonProperty property in value.EnumerateObject())
         {
             if (!knownFields.Contains(property.Name))

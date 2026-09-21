@@ -19,6 +19,43 @@ public sealed class BaselineSchemaContractTests
     }
 
     [Fact]
+    public void DuplicateTopLevelFieldFailsClosedWithActionableDiagnostic()
+    {
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        const string json = "{\"schemaVersion\":1,\"schemaVersion\":1,\"endpoints\":[]}";
+        File.WriteAllText(path, json);
+        byte[] before = File.ReadAllBytes(path);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-duplicate-field", exception.Code);
+        Assert.Contains("schemaVersion", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("top-level", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void DuplicateTopLevelEndpointsFieldFailsClosed()
+    {
+        AssertDuplicateFieldRejected(
+            "{\"schemaVersion\":1,\"endpoints\":[],\"endpoints\":[]}",
+            "endpoints",
+            "top-level");
+    }
+
+    [Theory]
+    [InlineData("{\"schemaVersion\":1,\"endpoints\":[{\"route\":\"/first\",\"route\":\"/second\"}]}", "route")]
+    [InlineData("{\"schemaVersion\":1,\"endpoints\":[{\"route\":42,\"route\":\"/second\"}]}", "route")]
+    [InlineData("{\"schemaVersion\":1,\"endpoints\":[{\"route\":\"/first\",\"route\":42}]}", "route")]
+    [InlineData("{\"schemaVersion\":1,\"endpoints\":[{\"methods\":[],\"methods\":[]}]}", "methods")]
+    public void DuplicateEndpointFieldFailsClosedRegardlessOfValueTypes(string json, string field)
+    {
+        AssertDuplicateFieldRejected(json, field, "$.endpoints[0]");
+    }
+
+    [Fact]
     public void UnknownEndpointFieldFailsClosedAndDoesNotRewriteTheFile()
     {
         AssertRejected(
@@ -56,6 +93,23 @@ public sealed class BaselineSchemaContractTests
     }
 
     [Fact]
+    public void ValidV1BaselineWithDistinctEndpointsRemainsReadable()
+    {
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        const string fingerprint = "0000000000000000000000000000000000000000000000000000000000000000";
+        string json = "{\"schemaVersion\":1,\"endpoints\":[" +
+            "{\"route\":\"/first\",\"methods\":[\"GET\"],\"authorization\":\"ExplicitProtected\",\"policies\":[],\"roles\":[],\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false,\"requirements\":[\"requirement\"],\"requirementFingerprint\":\"" + fingerprint + "\"}," +
+            "{\"route\":\"/second\",\"methods\":[\"GET\"],\"authorization\":\"ExplicitProtected\",\"policies\":[],\"roles\":[],\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false,\"requirements\":[\"requirement\"],\"requirementFingerprint\":\"" + fingerprint + "\"}]}";
+        File.WriteAllText(path, json);
+
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Read(path);
+
+        Assert.Equal(1, baseline.SchemaVersion);
+        Assert.Equal(["/first", "/second"], baseline.Endpoints.Select(static endpoint => endpoint.Route));
+    }
+
+    [Fact]
     public void OversizedBaselineFailsWithBoundedDiagnostic()
     {
         using TemporaryDirectory directory = new();
@@ -80,6 +134,36 @@ public sealed class BaselineSchemaContractTests
             () => AuthSurfaceBaseline.Read(path));
 
         Assert.Equal("baseline-too-deep", exception.Code);
+    }
+
+    [Theory]
+    [InlineData("{\"schemaVersion\":1", "baseline-truncated")]
+    [InlineData("{\"schemaVersion\":1,\"endpoints\":[", "baseline-truncated")]
+    [InlineData("{\"schemaVersion\":1,\"endpoints\":[{\"route\":\"/x", "baseline-truncated")]
+    public void TruncatedBaselineFormsHaveTruncatedDiagnostic(string json, string code)
+    {
+        AssertRejected(json, code);
+    }
+
+    [Fact]
+    public void TruncatedEscapeSequenceHasTruncatedDiagnostic()
+    {
+        AssertRejected("{\"schemaVersion\":1,\"endpoints\":[{\"route\":\"" + "\\", "baseline-truncated");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   \r\n  ")]
+    [InlineData("{\"schemaVersion\":1,\"endpoints\":[],}")]
+    public void EmptyWhitespaceAndCompleteMalformedBaselineHaveMalformedDiagnostic(string json)
+    {
+        AssertRejected(json, "baseline-malformed");
+    }
+
+    [Fact]
+    public void CompleteBaselineBeyondDepthBoundHasTooDeepDiagnostic()
+    {
+        AssertRejected(new string('[', 40) + "0" + new string(']', 40), "baseline-too-deep");
     }
 
     [Fact]
@@ -115,6 +199,22 @@ public sealed class BaselineSchemaContractTests
             () => AuthSurfaceBaseline.Read(path));
 
         Assert.Equal(code, exception.Code);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    private static void AssertDuplicateFieldRejected(string json, string field, string location)
+    {
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        File.WriteAllText(path, json);
+        byte[] before = File.ReadAllBytes(path);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-duplicate-field", exception.Code);
+        Assert.Contains(field, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(location, exception.Message, StringComparison.Ordinal);
         Assert.Equal(before, File.ReadAllBytes(path));
     }
 
