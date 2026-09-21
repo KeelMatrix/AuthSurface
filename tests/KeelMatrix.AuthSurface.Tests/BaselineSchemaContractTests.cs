@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using AuthSurface.FixtureApp;
 using KeelMatrix.AuthSurface;
 using Microsoft.AspNetCore.Authorization;
@@ -110,7 +111,8 @@ public sealed class BaselineSchemaContractTests
         string outputPath = Path.Combine(directory.Path, "written.json");
         baseline.Write(outputPath, overwrite: false);
         byte[] outputBytes = File.ReadAllBytes(outputPath);
-        Assert.False(outputBytes.AsSpan().StartsWith(Encoding.UTF8.GetPreamble()));
+        Assert.Equal((byte)'{', outputBytes[0]);
+        Assert.True(outputBytes.AsSpan().IndexOf(Encoding.UTF8.GetPreamble()) < 0);
     }
 
     [Fact]
@@ -120,11 +122,94 @@ public sealed class BaselineSchemaContractTests
     }
 
     [Fact]
-    public void Utf8BomInsideBaselineIsNotSilentlyAccepted()
+    public void RawUtf8BomBetweenTokensFailsClosedWithoutRewriting()
     {
         AssertRejected(
             WithUtf8Bom("{\"schemaVersion\":1," + "\uFEFF" + "\"endpoints\":[]}"),
             "baseline-malformed");
+    }
+
+    [Fact]
+    public void RawUtf8BomInsideRouteStringFailsClosedWithoutRewriting()
+    {
+        AssertRejected(
+            Encoding.UTF8.GetBytes(CreateBaselineJson(route: "/orders" + "\uFEFF")),
+            "baseline-malformed");
+    }
+
+    [Fact]
+    public void RawUtf8BomInsidePropertyNameFailsClosedWithoutRewriting()
+    {
+        AssertRejected(
+            Encoding.UTF8.GetBytes("{\"schemaVersion\":1,\"endpoints\":[],\"future" + "\uFEFF" + "Field\":true}"),
+            "baseline-malformed");
+    }
+
+    [Fact]
+    public void MultipleRawUtf8BomsInDifferentPlacesFailClosedWithoutRewriting()
+    {
+        string json = "{\"schemaVersion\":1,\"endpoints\":[{" +
+            "\"route\":\"/orders" + "\uFEFF" + "\",\"methods\":[\"GET\"]," +
+            "\"authorization\":\"ExplicitProtected\",\"policies\":[],\"roles\":[]," +
+            "\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false," +
+            "\"requirements\":[\"requirement\"],\"requirementFingerprint\":\"" +
+            new string('0', 64) + "\"}],\"future" + "\uFEFF" + "Field\":true}";
+
+        AssertRejected(Encoding.UTF8.GetBytes(json), "baseline-malformed");
+    }
+
+    [Fact]
+    public void Utf8BomOnlyFileFailsClosedWithoutRewriting()
+    {
+        AssertRejected(Encoding.UTF8.GetPreamble(), "baseline-malformed");
+    }
+
+    [Fact]
+    public void Utf16LeBomPrefixedBaselineFailsClosedWithoutRewriting()
+    {
+        byte[] bytes = Encoding.Unicode.GetPreamble()
+            .Concat(Encoding.Unicode.GetBytes("{\"schemaVersion\":1,\"endpoints\":[]}"))
+            .ToArray();
+
+        AssertRejected(bytes, "baseline-malformed");
+    }
+
+    [Fact]
+    public void EscapedUtf8BomInsideStringIsAcceptedAsOrdinaryContent()
+    {
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        string json = CreateBaselineJson(requirement: @"intentional\uFEFF-content");
+        File.WriteAllText(path, json, new UTF8Encoding(false));
+
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Read(path);
+
+        Assert.Equal("intentional\uFEFF-content", Assert.Single(baseline.Endpoints).Requirements.Single());
+    }
+
+    [Fact]
+    public void ValidBomFreeBaselineRemainsReadableAndUnchanged()
+    {
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        byte[] bytes = Encoding.UTF8.GetBytes("{\"schemaVersion\":1,\"endpoints\":[]}");
+        File.WriteAllBytes(path, bytes);
+
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Read(path);
+
+        Assert.Equal(1, baseline.SchemaVersion);
+        Assert.Empty(baseline.Endpoints);
+        Assert.Equal(bytes, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void BaselineDiagnosticCodesMatchTheShippedDocumentation()
+    {
+        string root = FindRepositoryRoot();
+        string source = File.ReadAllText(Path.Combine(root, "src", "KeelMatrix.AuthSurface", "AuthSurfaceBaseline.cs"));
+        string readme = File.ReadAllText(Path.Combine(root, "src", "KeelMatrix.AuthSurface", "README.md"));
+
+        AssertDiagnosticCodeContract(source, readme);
     }
 
     [Fact]
@@ -289,6 +374,46 @@ public sealed class BaselineSchemaContractTests
     private static byte[] WithUtf8Bom(string text)
     {
         return Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(text)).ToArray();
+    }
+
+    private static string CreateBaselineJson(string route = "/orders", string requirement = "requirement") =>
+        "{\"schemaVersion\":1,\"endpoints\":[{" +
+        "\"route\":\"" + route + "\",\"methods\":[\"GET\"]," +
+        "\"authorization\":\"ExplicitProtected\",\"policies\":[],\"roles\":[]," +
+        "\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false," +
+        "\"requirements\":[\"" + requirement + "\"],\"requirementFingerprint\":\"" +
+        new string('0', 64) + "\"}]}";
+
+    private static void AssertDiagnosticCodeContract(string source, string readme)
+    {
+        HashSet<string> sourceCodes = Regex.Matches(source, "\\\"(?<code>baseline-[a-z0-9-]+)\\\"")
+            .Select(static match => match.Groups["code"].Value)
+            .ToHashSet(StringComparer.Ordinal);
+        HashSet<string> documentedCodes = Regex.Matches(
+                readme,
+                "^\\| `(?<code>baseline-[a-z0-9-]+)` \\|",
+                RegexOptions.Multiline)
+            .Select(static match => match.Groups["code"].Value)
+            .ToHashSet(StringComparer.Ordinal);
+
+        string missing = string.Join(",", sourceCodes.Except(documentedCodes).OrderBy(static code => code, StringComparer.Ordinal));
+        string undocumented = string.Join(",", documentedCodes.Except(sourceCodes).OrderBy(static code => code, StringComparer.Ordinal));
+        Assert.True(
+            sourceCodes.SetEquals(documentedCodes),
+            $"SOURCE_CODES={string.Join(',', sourceCodes.OrderBy(static code => code, StringComparer.Ordinal))} " +
+            $"DOC_CODES={string.Join(',', documentedCodes.OrderBy(static code => code, StringComparer.Ordinal))} " +
+            $"SOURCE_NOT_DOC={missing} DOC_NOT_SOURCE={undocumented}");
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "KeelMatrix.AuthSurface.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName ?? throw new InvalidOperationException("Could not locate the repository root.");
     }
 
     private static void AssertDuplicateFieldRejected(string json, string field, string location)

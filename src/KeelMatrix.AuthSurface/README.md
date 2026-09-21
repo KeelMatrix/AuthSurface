@@ -47,13 +47,15 @@ The four classifications are:
 
 ## Baselines, identity, and diagnostics
 
-`authsurface.json` is bounded, UTF-8, schema-versioned JSON with deterministic ordering and `\n` newlines. Schema version 1 accepts one leading UTF-8 BOM when the document is otherwise valid; a BOM inside the document is invalid, and the writer always emits BOM-free UTF-8. It rejects schema errors with structured `AuthSurfaceBaselineException` diagnostics and never silently rewrites a file. Duplicate and unknown property names are rendered in diagnostics at no more than 128 characters; longer names end with `…(truncated)` to keep diagnostic text bounded.
+`authsurface.json` is bounded, UTF-8, schema-versioned JSON with deterministic ordering and `\n` newlines. Schema version 1 accepts one leading UTF-8 BOM when the document is otherwise valid; a raw BOM inside the document is invalid, while an escaped `\\uFEFF` sequence inside a JSON string is treated as ordinary string content. The writer always emits BOM-free UTF-8. It rejects schema errors with structured `AuthSurfaceBaselineException` diagnostics and never silently rewrites a file. Duplicate and unknown property names are rendered in diagnostics at no more than 128 characters; longer names end with `…(truncated)` to keep diagnostic text bounded.
 
 ### Baseline diagnostic troubleshooting
 
 | Code | Meaning | What to do |
 | --- | --- | --- |
 | `baseline-duplicate-field` | A property name appears more than once in one JSON object. The message names the property and identifies the top level or the endpoint entry (`$.endpoints[index]`). | Remove the duplicate property and keep the value that matches the intended schema. |
+| `baseline-duplicate-identity` | Two endpoint records normalize to the same route and HTTP method identity. | Remove the duplicate record or correct its route/method before regenerating the baseline. |
+| `baseline-endpoint-limit` | The baseline endpoint list is missing or exceeds the supported 100,000-record bound. | Reduce the baseline to the intended endpoint set and regenerate it from a bounded scan. |
 | `baseline-truncated` | The document ends in the middle of a JSON structure, such as an object, array, string, or escape sequence. | Restore the missing bytes or regenerate the baseline from a trusted scan. |
 | `baseline-malformed` | The file is empty, whitespace-only, has a syntax error, contains an invalid BOM placement, or is otherwise not valid JSON for schema version 1. | Fix the JSON syntax or regenerate the baseline; a malformed file is never rewritten. |
 | `baseline-too-deep` | A complete JSON document exceeds the supported nesting depth. This is distinct from `baseline-truncated`, which means the document ends before its structure is complete. | Remove unexpected nesting and regenerate the baseline if the content is intentional. |
@@ -62,6 +64,7 @@ The four classifications are:
 | `baseline-field-type` | A known property has the wrong JSON type, such as a string where an array or boolean is required. | Change the value to the type required by schema version 1. |
 | `baseline-schema-unsupported` | The file declares a schema version other than the supported version 1. | Migrate the file explicitly to schema version 1; AuthSurface does not downgrade it automatically. |
 | `baseline-too-large` | The file exceeds the default 1 MiB input limit (or the limit supplied to `Read`). | Reduce the baseline size or provide an intentional, bounded maximum appropriate for the application. |
+| `baseline-read-failed` | The baseline could not be opened or read because of an I/O or access failure. | Check that the path exists and that the process has permission to read the file, then retry. |
 
 For all diagnostics, inspect the `Code` and message on `AuthSurfaceBaselineException`. The original file remains byte-for-byte unchanged on failure.
 

@@ -99,6 +99,8 @@ public sealed class AuthSurfaceBaseline
             jsonBytes = bytes[3..];
         }
 
+        RejectMisplacedUtf8Bom(jsonBytes);
+
         ValidateJsonSyntaxBeforeDepth(jsonBytes);
 
         JsonDocument jsonDocument;
@@ -315,6 +317,19 @@ public sealed class AuthSurfaceBaseline
                 ? "The baseline ends before its JSON document is complete."
                 : "The baseline is not valid JSON.";
             throw new AuthSurfaceBaselineException(code, message, exception);
+        }
+    }
+
+    private static void RejectMisplacedUtf8Bom(byte[] bytes)
+    {
+        for (int index = 0; index <= bytes.Length - 3; index++)
+        {
+            if (bytes[index] == 0xEF && bytes[index + 1] == 0xBB && bytes[index + 2] == 0xBF)
+            {
+                throw new AuthSurfaceBaselineException(
+                    "baseline-malformed",
+                    "The baseline contains a misplaced UTF-8 BOM.");
+            }
         }
     }
 
