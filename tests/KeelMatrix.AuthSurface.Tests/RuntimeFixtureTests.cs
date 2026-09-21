@@ -104,6 +104,17 @@ public sealed class RuntimeFixtureTests
         Assert.DoesNotContain(report.PolicyViolations, violation => violation.Route == "/unprotected");
     }
 
+    [Fact]
+    public async Task StrictFallbackModeRejectsFallbackProtectedEndpoints()
+    {
+        await using var app = FixtureHost.BuildWebApplication(fallbackPolicy: true);
+        await app.StartAsync();
+        AuthSurfaceReport report = await new AuthSurfaceScanner(app.Services).ScanAsync(
+            new AuthSurfaceScanOptions(strictFallbackPolicy: true));
+
+        Assert.Contains(report.PolicyViolations, violation => violation.Code == "fallback-policy-endpoint");
+    }
+
     private static async Task<AuthSurfaceReport> ScanAsync(IServiceProvider services)
     {
         return await new AuthSurfaceScanner(services).ScanAsync();
