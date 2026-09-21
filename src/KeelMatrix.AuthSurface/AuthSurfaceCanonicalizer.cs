@@ -68,6 +68,9 @@ internal static class AuthSurfaceCanonicalizer
         return route != 0 ? route : StringComparer.Ordinal.Compare(left.Method, right.Method);
     }
 
+    internal static string CanonicalIdentity(string route, string method) =>
+        route.ToUpperInvariant() + "\u001f" + method.ToUpperInvariant();
+
     internal static string Fingerprint(
         AuthSurfaceAuthorizationKind authorizationKind,
         IEnumerable<string> policies,

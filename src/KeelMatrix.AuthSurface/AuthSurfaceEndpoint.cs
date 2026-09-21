@@ -59,5 +59,5 @@ public sealed class AuthSurfaceEndpoint
 
     internal string Method => Methods[0];
 
-    internal string Identity => Route + "\u001f" + Method;
+    internal string Identity => AuthSurfaceCanonicalizer.CanonicalIdentity(Route, Method);
 }

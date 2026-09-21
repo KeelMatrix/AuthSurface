@@ -8,6 +8,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+$root = Split-Path -Parent $PSScriptRoot
+$projectReadmePath = Join-Path $root 'src/KeelMatrix.AuthSurface/README.md'
 
 if (-not (Test-Path -LiteralPath $PackagePath)) {
     throw "Package does not exist: $PackagePath"
@@ -22,6 +24,24 @@ try {
     if (-not ($entries -contains 'README.md') -or -not ($entries -contains 'LICENSE') -or
         -not ($entries -contains 'SECURITY.md') -or -not ($entries -contains 'PRIVACY.md')) {
         throw 'Package is missing required documentation entries.'
+    }
+
+    if (-not (Test-Path -LiteralPath $projectReadmePath)) {
+        throw "Project README does not exist: $projectReadmePath"
+    }
+
+    $readmeEntry = $archive.Entries | Where-Object FullName -eq 'README.md' | Select-Object -First 1
+    $readmeHashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $readmeStream = $readmeEntry.Open()
+        try { $packedReadmeHash = [System.BitConverter]::ToString($readmeHashAlgorithm.ComputeHash($readmeStream)).Replace('-', '').ToLowerInvariant() }
+        finally { $readmeStream.Dispose() }
+    }
+    finally { $readmeHashAlgorithm.Dispose() }
+    $projectReadmeHash = (Get-FileHash -LiteralPath $projectReadmePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-Output "README_SHA256 packed=$packedReadmeHash project=$projectReadmeHash"
+    if ($packedReadmeHash -ne $projectReadmeHash) {
+        throw 'Packed README is not byte-identical to the project-local README.'
     }
 
     if ($entries | Where-Object { $_ -match '(^|/)(tests|fixtures|sample|samples|obj|bin)(/|$)|\.env' }) {
@@ -62,7 +82,24 @@ try {
     }
 
     if ($entries -contains 'icon.png') {
-        Write-Output 'Icon=packed icon.png'
+        if ($metadata.icon -ne 'icon.png') {
+            throw 'Package icon metadata is not icon.png.'
+        }
+
+        $rootIconPath = Join-Path $root 'icon.png'
+        $packedIcon = $archive.Entries | Where-Object FullName -eq 'icon.png' | Select-Object -First 1
+        $rootIconHash = (Get-FileHash -LiteralPath $rootIconPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $iconHashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $iconStream = $packedIcon.Open()
+            try { $packedIconHash = [System.BitConverter]::ToString($iconHashAlgorithm.ComputeHash($iconStream)).Replace('-', '').ToLowerInvariant() }
+            finally { $iconStream.Dispose() }
+        }
+        finally { $iconHashAlgorithm.Dispose() }
+        Write-Output "Icon=packed icon.png SHA256=$packedIconHash root=$rootIconHash"
+        if ($packedIconHash -ne $rootIconHash) {
+            throw 'Packed icon is not byte-identical to the repository-root icon.'
+        }
     }
     else {
         Write-Output 'Icon=not present; founder placement remains required before a public release.'

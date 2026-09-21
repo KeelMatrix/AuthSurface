@@ -31,7 +31,6 @@ try {
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="KeelMatrix.AuthSurface" Version="0.1.0" />
   </ItemGroup>
 </Project>
 '@ | Set-Content -LiteralPath (Join-Path $project 'Consumer.csproj') -Encoding utf8
@@ -42,17 +41,21 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 
-static WebApplication BuildApplication(bool includeNewEndpoint)
+static WebApplication BuildApplication(bool fallbackPolicy, bool includeNewEndpoint)
 {
     WebApplicationBuilder builder = WebApplication.CreateBuilder();
     builder.Services.AddAuthorization(options =>
     {
-        options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
+        if (fallbackPolicy)
+        {
+            options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
+        }
     });
     WebApplication application = builder.Build();
     application.Urls.Add("http://127.0.0.1:0");
     application.MapGet("/protected", () => Results.Ok()).RequireAuthorization();
     application.MapGet("/anonymous", () => Results.Ok()).AllowAnonymous();
+    application.MapGet("/unprotected", () => Results.Ok());
     if (includeNewEndpoint)
     {
         application.MapGet("/new", () => Results.Ok());
@@ -61,7 +64,7 @@ static WebApplication BuildApplication(bool includeNewEndpoint)
     return application;
 }
 
-await using WebApplication app = BuildApplication(includeNewEndpoint: false);
+await using WebApplication app = BuildApplication(fallbackPolicy: true, includeNewEndpoint: false);
 await app.StartAsync();
 AuthSurfaceScanner scanner = new(
     app.Services.GetServices<EndpointDataSource>(),
@@ -74,8 +77,19 @@ try
     AuthSurfaceVerificationResult matching = AuthSurfaceVerifier.Compare(first, baselinePath);
     matching.AssertValid();
 
+    await using WebApplication unprotectedApp = BuildApplication(fallbackPolicy: false, includeNewEndpoint: false);
+    await unprotectedApp.StartAsync();
+    AuthSurfaceScanner unprotectedScanner = new(
+        unprotectedApp.Services.GetServices<EndpointDataSource>(),
+        unprotectedApp.Services.GetRequiredService<IAuthorizationPolicyProvider>());
+    AuthSurfaceVerificationResult unprotected = AuthSurfaceVerifier.VerifyPolicy(await unprotectedScanner.ScanAsync());
+    if (unprotected.IsValid || !unprotected.Violations.Any(violation => violation.Code == "unprotected-endpoint"))
+    {
+        throw new InvalidOperationException("consumer smoke did not report an unprotected-policy failure");
+    }
+
     await app.StopAsync();
-    await using WebApplication changedApp = BuildApplication(includeNewEndpoint: true);
+    await using WebApplication changedApp = BuildApplication(fallbackPolicy: true, includeNewEndpoint: true);
     await changedApp.StartAsync();
     AuthSurfaceScanner changedScanner = new(
         changedApp.Services.GetServices<EndpointDataSource>(),
@@ -87,7 +101,7 @@ try
         throw new InvalidOperationException("consumer smoke did not report the added endpoint");
     }
 
-    Console.WriteLine("consumer smoke passed: package reference scan, explicit baseline creation, matching comparison, and structured endpoint-added failure");
+    Console.WriteLine("consumer smoke passed: documented package install, runtime scan, explicit baseline creation, matching comparison, unprotected-policy failure, and structured endpoint-added failure");
 }
 finally
 {
@@ -99,6 +113,15 @@ finally
     $env:KEELMATRIX_NO_TELEMETRY = '1'
     $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     $env:DO_NOT_TRACK = '1'
+    Push-Location $project
+    try {
+        & dotnet add package KeelMatrix.AuthSurface --version 0.1.0
+        if ($LASTEXITCODE -ne 0) { throw "documented package install failed with exit code $LASTEXITCODE" }
+    }
+    finally {
+        Pop-Location
+    }
+
     & dotnet restore (Join-Path $project 'Consumer.csproj') --configfile (Join-Path $root 'NuGet.config') --force-evaluate --no-cache
     if ($LASTEXITCODE -ne 0) { throw "consumer restore failed with exit code $LASTEXITCODE" }
     & dotnet run --project (Join-Path $project 'Consumer.csproj') -c Release --no-restore

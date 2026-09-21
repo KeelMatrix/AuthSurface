@@ -46,8 +46,18 @@ try {
     Invoke-Gate 'dependency vulnerability check' { dotnet list $solution package --vulnerable --include-transitive --format json }
     Invoke-Gate 'clean package consumer smoke' { & (Join-Path $PSScriptRoot 'consumer-smoke.ps1') -PackagePath $nupkg.FullName }
 
-    $leaks = & rg.exe -n --hidden --glob '!.git/**' --glob '!**/bin/**' --glob '!**/obj/**' 'Paperclip|Codex|KEE-[0-9]+' $root 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    $forbiddenPattern = 'Paper' + 'clip|Cod' + 'ex|KEE-' + '[0-9]+'
+    $validatorPath = 'scripts/validate.ps1'
+    $trackedFiles = @(git -C $root ls-files)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate tracked product files.' }
+    $leaks = foreach ($relativePath in $trackedFiles) {
+        $normalizedPath = $relativePath.Replace('\', '/')
+        if ($normalizedPath -eq $validatorPath) { continue }
+
+        $fullPath = Join-Path $root $relativePath
+        & rg.exe -n --no-heading --no-messages $forbiddenPattern -- $fullPath 2>$null
+    }
+    if ($leaks.Count -gt 0) {
         $leaks | Write-Output
         throw 'Internal wording was found in product files.'
     }

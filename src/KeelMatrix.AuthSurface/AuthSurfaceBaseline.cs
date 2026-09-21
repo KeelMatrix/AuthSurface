@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -90,6 +91,27 @@ public sealed class AuthSurfaceBaseline
                 exception);
         }
 
+        JsonDocument jsonDocument;
+        try
+        {
+            jsonDocument = JsonDocument.Parse(bytes, JsonDocumentOptions);
+        }
+        catch (JsonException exception)
+        {
+            string code = exception.Message.Contains("depth", StringComparison.OrdinalIgnoreCase)
+                ? "baseline-too-deep"
+                : "baseline-malformed";
+            string message = code == "baseline-too-deep"
+                ? "The baseline exceeds the supported JSON nesting depth."
+                : "The baseline is not valid JSON.";
+            throw new AuthSurfaceBaselineException(code, message, exception);
+        }
+
+        using (jsonDocument)
+        {
+            ValidateSchema(jsonDocument.RootElement);
+        }
+
         BaselineDocument? document;
         try
         {
@@ -97,7 +119,7 @@ public sealed class AuthSurfaceBaseline
         }
         catch (JsonException exception)
         {
-            throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline is not valid JSON.", exception);
+            throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline is not valid according to schema version 1.", exception);
         }
 
         if (document is null)
@@ -207,7 +229,144 @@ public sealed class AuthSurfaceBaseline
         ReadCommentHandling = JsonCommentHandling.Disallow,
         AllowTrailingCommas = false,
         MaxDepth = 32,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
     };
+
+    private static readonly JsonDocumentOptions JsonDocumentOptions = new()
+    {
+        CommentHandling = JsonCommentHandling.Disallow,
+        AllowTrailingCommas = false,
+        MaxDepth = 32,
+    };
+
+    private static readonly HashSet<string> TopLevelFields = ["schemaVersion", "endpoints"];
+
+    private static readonly HashSet<string> EndpointFields =
+    [
+        "route",
+        "methods",
+        "authorization",
+        "policies",
+        "roles",
+        "schemes",
+        "usesDefaultPolicy",
+        "usesFallbackPolicy",
+        "requirements",
+        "requirementFingerprint",
+    ];
+
+    private static void ValidateSchema(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline root must be a JSON object.");
+        }
+
+        ValidateKnownFields(root, TopLevelFields, "baseline-unknown-field", "top-level");
+
+        if (root.TryGetProperty("schemaVersion", out JsonElement schemaVersion) &&
+            (schemaVersion.ValueKind != JsonValueKind.Number || !schemaVersion.TryGetInt32(out _)))
+        {
+            throw new AuthSurfaceBaselineException(
+                "baseline-field-type",
+                "The baseline field '$.schemaVersion' must be a JSON integer.");
+        }
+
+        if (!root.TryGetProperty("endpoints", out JsonElement endpoints))
+        {
+            return;
+        }
+
+        if (endpoints.ValueKind != JsonValueKind.Array)
+        {
+            throw new AuthSurfaceBaselineException(
+                "baseline-field-type",
+                "The baseline field '$.endpoints' must be a JSON array.");
+        }
+
+        int index = 0;
+        foreach (JsonElement endpoint in endpoints.EnumerateArray())
+        {
+            string path = "$.endpoints[" + index.ToString(CultureInfo.InvariantCulture) + "]";
+            if (endpoint.ValueKind != JsonValueKind.Object)
+            {
+                throw new AuthSurfaceBaselineException(
+                    "baseline-field-type",
+                    $"The baseline value '{path}' must be a JSON object.");
+            }
+
+            ValidateKnownFields(endpoint, EndpointFields, "baseline-unknown-endpoint-field", path);
+            ValidateEndpointFieldTypes(endpoint, path);
+            index++;
+        }
+    }
+
+    private static void ValidateKnownFields(
+        JsonElement value,
+        HashSet<string> knownFields,
+        string errorCode,
+        string scope)
+    {
+        foreach (JsonProperty property in value.EnumerateObject())
+        {
+            if (!knownFields.Contains(property.Name))
+            {
+                throw new AuthSurfaceBaselineException(
+                    errorCode,
+                    $"The baseline field '{scope}.{property.Name}' is not declared in schema version 1.");
+            }
+        }
+    }
+
+    private static void ValidateEndpointFieldTypes(JsonElement endpoint, string path)
+    {
+        ValidateString(endpoint, "route", path);
+        ValidateString(endpoint, "authorization", path);
+        ValidateString(endpoint, "requirementFingerprint", path);
+        ValidateStringArray(endpoint, "methods", path);
+        ValidateStringArray(endpoint, "policies", path);
+        ValidateStringArray(endpoint, "roles", path);
+        ValidateStringArray(endpoint, "schemes", path);
+        ValidateStringArray(endpoint, "requirements", path);
+        ValidateBoolean(endpoint, "usesDefaultPolicy", path);
+        ValidateBoolean(endpoint, "usesFallbackPolicy", path);
+    }
+
+    private static void ValidateString(JsonElement value, string name, string path)
+    {
+        if (value.TryGetProperty(name, out JsonElement property) && property.ValueKind != JsonValueKind.String)
+        {
+            throw new AuthSurfaceBaselineException(
+                "baseline-field-type",
+                $"The baseline field '{path}.{name}' must be a JSON string.");
+        }
+    }
+
+    private static void ValidateStringArray(JsonElement value, string name, string path)
+    {
+        if (!value.TryGetProperty(name, out JsonElement property))
+        {
+            return;
+        }
+
+        if (property.ValueKind != JsonValueKind.Array || property.EnumerateArray().Any(static item => item.ValueKind != JsonValueKind.String))
+        {
+            throw new AuthSurfaceBaselineException(
+                "baseline-field-type",
+                $"The baseline field '{path}.{name}' must be a JSON array of strings.");
+        }
+    }
+
+    private static void ValidateBoolean(JsonElement value, string name, string path)
+    {
+        if (value.TryGetProperty(name, out JsonElement property) &&
+            property.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            throw new AuthSurfaceBaselineException(
+                "baseline-field-type",
+                $"The baseline field '{path}.{name}' must be a JSON boolean.");
+        }
+    }
 
     private static BaselineDocument ToDocument() => new()
     {

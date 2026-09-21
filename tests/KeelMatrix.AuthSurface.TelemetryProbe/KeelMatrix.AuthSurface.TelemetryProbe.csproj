@@ -1,20 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
-    <IsPackable>false</IsPackable>
-    <IsTestProject>true</IsTestProject>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/KeelMatrix.AuthSurface/KeelMatrix.AuthSurface.csproj" />
     <ProjectReference Include="../../fixtures/AuthSurface.FixtureApp/AuthSurface.FixtureApp.csproj" />
-    <ProjectReference Include="../KeelMatrix.AuthSurface.TelemetryProbe/KeelMatrix.AuthSurface.TelemetryProbe.csproj" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" />
-    <PackageReference Include="xunit" />
-    <PackageReference Include="xunit.runner.visualstudio" />
-    <PackageReference Include="coverlet.collector" />
   </ItemGroup>
 </Project>

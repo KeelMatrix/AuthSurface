@@ -1,5 +1,8 @@
+using System.Diagnostics;
+using System.Text.Json;
 using AuthSurface.FixtureApp;
 using KeelMatrix.AuthSurface;
+using TelemetryProbeProgram = KeelMatrix.AuthSurface.TelemetryProbe.Program;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -7,6 +10,21 @@ namespace KeelMatrix.AuthSurface.Tests;
 
 public sealed class TelemetryTests
 {
+    private static readonly HashSet<string> AllowedPayloadFields =
+    [
+        "event",
+        "tool",
+        "tool_version",
+        "telemetry_version",
+        "schema_version",
+        "project_hash",
+        "installation_hash",
+        "runtime",
+        "os",
+        "ci",
+        "timestamp",
+    ];
+
     [Fact]
     public async Task TelemetryOverrideReceivesNoProductOrSecurityPayload()
     {
@@ -36,6 +54,73 @@ public sealed class TelemetryTests
             Assert.True(result.IsValid);
         }
     }
+
+    [Fact]
+    public async Task FreshProcessActualPayloadContainsOnlySharedAllowedFields()
+    {
+        ProcessResult result = await RunProbeAsync("capture");
+
+        Assert.Equal(0, result.ExitCode);
+        string payload = Assert.Single(result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries), line => line.StartsWith("PAYLOAD=", StringComparison.Ordinal))["PAYLOAD=".Length..];
+        using JsonDocument document = JsonDocument.Parse(payload);
+
+        Assert.NotEmpty(document.RootElement.EnumerateObject());
+        Assert.All(document.RootElement.EnumerateObject(), property => Assert.Contains(property.Name, AllowedPayloadFields));
+        Assert.Contains("project_hash", document.RootElement.EnumerateObject().Select(static property => property.Name));
+        Assert.Contains("installation_hash", document.RootElement.EnumerateObject().Select(static property => property.Name));
+        Assert.DoesNotContain("/explicit", payload, StringComparison.Ordinal);
+        Assert.DoesNotContain("Named", payload, StringComparison.Ordinal);
+        Assert.DoesNotContain("Admin", payload, StringComparison.Ordinal);
+        Assert.DoesNotContain("Bearer", payload, StringComparison.Ordinal);
+        Assert.DoesNotContain("authsurface.json", payload, StringComparison.Ordinal);
+        Assert.DoesNotContain("FixtureController", payload, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FreshProcessEnvironmentOptOutSuppressesPayload()
+    {
+        ProcessResult result = await RunProbeAsync("suppressed");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("NO_PAYLOAD", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    private static async Task<ProcessResult> RunProbeAsync(string mode)
+    {
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "dotnet",
+            WorkingDirectory = FindRepositoryRoot(),
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add(typeof(TelemetryProbeProgram).Assembly.Location);
+        startInfo.ArgumentList.Add(mode);
+        startInfo.Environment.Remove("KEELMATRIX_NO_TELEMETRY");
+        startInfo.Environment.Remove("DOTNET_CLI_TELEMETRY_OPTOUT");
+        startInfo.Environment.Remove("DO_NOT_TRACK");
+
+        using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("Telemetry probe could not start.");
+        Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
+        Task<string> standardError = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        return new ProcessResult(process.ExitCode, await standardOutput, await standardError);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "KeelMatrix.AuthSurface.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName ?? throw new InvalidOperationException("AuthSurface repository root was not found.");
+    }
+
+    private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
 
     private sealed class RecordingTelemetry : IAuthSurfaceTelemetry
     {
