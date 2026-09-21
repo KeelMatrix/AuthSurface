@@ -27,6 +27,7 @@ function Invoke-Gate([string] $Name, [scriptblock] $Action) {
 Push-Location $root
 try {
     Invoke-Gate 'release workflow contract' { & (Join-Path $PSScriptRoot 'validate-release-workflow.ps1') }
+    Invoke-Gate 'release workflow validator mutation tests' { & (Join-Path $PSScriptRoot 'test-release-workflow.ps1') }
     Invoke-Gate 'release contract tests' { & (Join-Path $PSScriptRoot 'test-release-contract.ps1') }
     Invoke-Gate 'pre-release changelog/version contract' {
         & (Join-Path $PSScriptRoot 'check-release-contract.ps1') -Mode Candidate -Version $version
@@ -59,6 +60,8 @@ try {
 
     $forbiddenPattern = 'Paper' + 'clip|Cod' + 'ex|KEE-' + '[0-9]+'
     $validatorPath = 'scripts/validate.ps1'
+    $rgPath = Get-Command rg -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1 -ExpandProperty Source
     $trackedFiles = @(git -C $root ls-files)
     if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate tracked product files.' }
     $leaks = foreach ($relativePath in $trackedFiles) {
@@ -66,7 +69,7 @@ try {
         if ($normalizedPath -eq $validatorPath) { continue }
 
         $fullPath = Join-Path $root $relativePath
-        & rg.exe -n --no-heading --no-messages $forbiddenPattern -- $fullPath 2>$null
+        & $rgPath -n --no-heading --no-messages $forbiddenPattern -- $fullPath 2>$null
     }
     if ($leaks.Count -gt 0) {
         $leaks | Write-Output
