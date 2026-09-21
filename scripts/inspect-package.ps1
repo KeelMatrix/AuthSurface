@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string] $PackagePath
+    [string] $PackagePath,
+
+    [string] $SymbolPackagePath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,8 +19,8 @@ try {
     Write-Output 'Package entries:'
     $entries | ForEach-Object { Write-Output "  $_" }
 
-    if ($entries -contains 'README.md' -eq $false -or $entries -contains 'LICENSE' -eq $false -or
-        $entries -contains 'SECURITY.md' -eq $false -or $entries -contains 'PRIVACY.md' -eq $false) {
+    if (-not ($entries -contains 'README.md') -or -not ($entries -contains 'LICENSE') -or
+        -not ($entries -contains 'SECURITY.md') -or -not ($entries -contains 'PRIVACY.md')) {
         throw 'Package is missing required documentation entries.'
     }
 
@@ -36,19 +38,19 @@ try {
     $metadata = $nuspec.package.metadata
     Write-Output "Nuspec id=$($metadata.id) version=$($metadata.version) tfm=net8.0"
     Write-Output "Nuspec description=$($metadata.description)"
-    Write-Output "Nuspec license=$($metadata.license.expression) repository=$($metadata.repository.url)"
+    Write-Output "Nuspec license=$($metadata.license.'#text') repository=$($metadata.repository.url)"
 
     if ($metadata.id -ne 'KeelMatrix.AuthSurface' -or $metadata.version -ne '0.1.0') {
         throw 'Package ID or version is incorrect.'
     }
 
-    $dependencyNames = @($metadata.dependencies.group.dependency | ForEach-Object name | Sort-Object -Unique)
+    $dependencyNames = @($metadata.dependencies.group.dependency | ForEach-Object { $_.id } | Sort-Object -Unique)
     Write-Output "Dependencies=$($dependencyNames -join ',')"
     if ($dependencyNames.Count -ne 1 -or $dependencyNames[0] -ne 'KeelMatrix.Telemetry') {
         throw 'Package dependency set is not exactly KeelMatrix.Telemetry.'
     }
 
-    $frameworkReferences = @($metadata.frameworkReferences.group.frameworkReference | ForEach-Object name)
+    $frameworkReferences = @($metadata.frameworkReferences.group.frameworkReference | ForEach-Object { $_.name })
     Write-Output "FrameworkReferences=$($frameworkReferences -join ',')"
     if ($frameworkReferences -notcontains 'Microsoft.AspNetCore.App') {
         throw 'Microsoft.AspNetCore.App framework reference is missing from nuspec metadata.'
@@ -68,4 +70,22 @@ try {
 }
 finally {
     $archive.Dispose()
+}
+
+if ($SymbolPackagePath) {
+    if (-not (Test-Path -LiteralPath $SymbolPackagePath)) {
+        throw "Symbol package does not exist: $SymbolPackagePath"
+    }
+
+    $symbols = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $SymbolPackagePath))
+    try {
+        Write-Output 'Symbol package entries:'
+        @($symbols.Entries | ForEach-Object FullName | Sort-Object) | ForEach-Object { Write-Output "  $_" }
+        if (-not ($symbols.Entries.FullName | Where-Object { $_ -like '*.pdb' })) {
+            throw 'Symbol package contains no PDB.'
+        }
+    }
+    finally {
+        $symbols.Dispose()
+    }
 }

@@ -40,7 +40,9 @@ try {
     Invoke-Gate 'package build' { dotnet pack $library -c $Configuration --no-build --no-restore -o $packageDirectory }
     $nupkg = Get-ChildItem -LiteralPath $packageDirectory -Filter 'KeelMatrix.AuthSurface.*.nupkg' | Where-Object Name -notlike '*.snupkg' | Select-Object -First 1
     if ($null -eq $nupkg) { throw 'No package was produced.' }
-    Invoke-Gate 'package inspection' { & (Join-Path $PSScriptRoot 'inspect-package.ps1') -PackagePath $nupkg.FullName }
+    $snupkg = Get-ChildItem -LiteralPath $packageDirectory -Filter 'KeelMatrix.AuthSurface.*.snupkg' | Select-Object -First 1
+    if ($null -eq $snupkg) { throw 'No symbol package was produced.' }
+    Invoke-Gate 'package inspection' { & (Join-Path $PSScriptRoot 'inspect-package.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName }
     Invoke-Gate 'dependency vulnerability check' { dotnet list $solution package --vulnerable --include-transitive --format json }
     Invoke-Gate 'clean package consumer smoke' { & (Join-Path $PSScriptRoot 'consumer-smoke.ps1') -PackagePath $nupkg.FullName }
 

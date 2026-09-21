@@ -42,17 +42,27 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 
-WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
-builder.Services.AddAuthorization(options =>
+static WebApplication BuildApplication(bool includeNewEndpoint)
 {
-    options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
-});
-WebApplication app = builder.Build();
-app.Urls.Add("http://127.0.0.1:0");
-app.MapGet("/protected", () => Results.Ok()).RequireAuthorization();
-app.MapGet("/anonymous", () => Results.Ok()).AllowAnonymous();
-await app.StartAsync();
+    WebApplicationBuilder builder = WebApplication.CreateBuilder();
+    builder.Services.AddAuthorization(options =>
+    {
+        options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
+    });
+    WebApplication application = builder.Build();
+    application.Urls.Add("http://127.0.0.1:0");
+    application.MapGet("/protected", () => Results.Ok()).RequireAuthorization();
+    application.MapGet("/anonymous", () => Results.Ok()).AllowAnonymous();
+    if (includeNewEndpoint)
+    {
+        application.MapGet("/new", () => Results.Ok());
+    }
 
+    return application;
+}
+
+await using WebApplication app = BuildApplication(includeNewEndpoint: false);
+await app.StartAsync();
 AuthSurfaceScanner scanner = new(
     app.Services.GetServices<EndpointDataSource>(),
     app.Services.GetRequiredService<IAuthorizationPolicyProvider>());
@@ -64,8 +74,13 @@ try
     AuthSurfaceVerificationResult matching = AuthSurfaceVerifier.Compare(first, baselinePath);
     matching.AssertValid();
 
-    app.MapGet("/new", () => Results.Ok());
-    AuthSurfaceReport changed = await scanner.ScanAsync();
+    await app.StopAsync();
+    await using WebApplication changedApp = BuildApplication(includeNewEndpoint: true);
+    await changedApp.StartAsync();
+    AuthSurfaceScanner changedScanner = new(
+        changedApp.Services.GetServices<EndpointDataSource>(),
+        changedApp.Services.GetRequiredService<IAuthorizationPolicyProvider>());
+    AuthSurfaceReport changed = await changedScanner.ScanAsync();
     AuthSurfaceVerificationResult mismatch = AuthSurfaceVerifier.Compare(changed, baselinePath);
     if (mismatch.IsValid || !mismatch.Violations.Any(violation => violation.Code == "endpoint-added"))
     {
@@ -77,7 +92,6 @@ try
 finally
 {
     File.Delete(baselinePath);
-    await app.StopAsync();
     await app.DisposeAsync();
 }
 '@ | Set-Content -LiteralPath (Join-Path $project 'Program.cs') -Encoding utf8
