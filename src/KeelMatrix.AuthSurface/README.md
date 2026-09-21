@@ -47,7 +47,7 @@ The four classifications are:
 
 ## Baselines, identity, and diagnostics
 
-`authsurface.json` is bounded, UTF-8, schema-versioned JSON with deterministic ordering and `\n` newlines. Schema version 1 accepts one leading UTF-8 BOM when the document is otherwise valid; a raw BOM inside the document is invalid, while an escaped `\\uFEFF` sequence inside a JSON string is treated as ordinary string content. The writer always emits BOM-free UTF-8. It rejects schema errors with structured `AuthSurfaceBaselineException` diagnostics and never silently rewrites a file. Duplicate and unknown property names are rendered in diagnostics at no more than 128 characters; longer names end with `…(truncated)` to keep diagnostic text bounded.
+`authsurface.json` is bounded, UTF-8, schema-versioned JSON with deterministic ordering and `\n` newlines. Schema version 1 accepts one leading UTF-8 BOM when the document is otherwise valid; a raw BOM inside the document is invalid, while an escaped `\uFEFF` sequence inside a JSON string is treated as ordinary string content. The writer always emits BOM-free UTF-8. It rejects schema errors with structured `AuthSurfaceBaselineException` diagnostics and never silently rewrites a file. Duplicate and unknown property names are rendered in diagnostics at no more than 128 characters; longer names end with `…(truncated)` to keep diagnostic text bounded.
 
 ### Baseline diagnostic troubleshooting
 
