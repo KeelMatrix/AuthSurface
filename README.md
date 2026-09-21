@@ -17,3 +17,11 @@ The package README is the canonical consumer guide, including the minimal scan, 
 - [Endpoint identity](docs/endpoint-identity.md)
 - [Privacy](PRIVACY.md)
 - [Developer guide](AGENTS.md)
+
+## Troubleshooting
+
+For empty endpoint sets, policy-resolution errors, duplicate endpoint identity, and unsupported baseline versions, see the package README's [diagnostic troubleshooting](src/KeelMatrix.AuthSurface/README.md#troubleshooting) section.
+
+## License
+
+AuthSurface is licensed under the [MIT License](LICENSE).
