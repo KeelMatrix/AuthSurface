@@ -47,7 +47,25 @@ The four classifications are:
 
 ## Baselines, identity, and diagnostics
 
-`authsurface.json` is bounded, UTF-8, schema-versioned JSON with deterministic ordering and `\n` newlines. Schema version 1 rejects unknown fields, wrong JSON types, malformed input, and unsupported future versions with structured `AuthSurfaceBaselineException` diagnostics. It never silently rewrites a file. Endpoint identity is the case-folded normalized route pattern plus HTTP method; the readable record may retain original casing. Equivalent route literals or parameter names therefore fail with `duplicate-endpoint-identity`, while genuinely different routes remain distinct.
+`authsurface.json` is bounded, UTF-8, schema-versioned JSON with deterministic ordering and `\n` newlines. Schema version 1 accepts one leading UTF-8 BOM when the document is otherwise valid; a BOM inside the document is invalid, and the writer always emits BOM-free UTF-8. It rejects schema errors with structured `AuthSurfaceBaselineException` diagnostics and never silently rewrites a file. Duplicate and unknown property names are rendered in diagnostics at no more than 128 characters; longer names end with `…(truncated)` to keep diagnostic text bounded.
+
+### Baseline diagnostic troubleshooting
+
+| Code | Meaning | What to do |
+| --- | --- | --- |
+| `baseline-duplicate-field` | A property name appears more than once in one JSON object. The message names the property and identifies the top level or the endpoint entry (`$.endpoints[index]`). | Remove the duplicate property and keep the value that matches the intended schema. |
+| `baseline-truncated` | The document ends in the middle of a JSON structure, such as an object, array, string, or escape sequence. | Restore the missing bytes or regenerate the baseline from a trusted scan. |
+| `baseline-malformed` | The file is empty, whitespace-only, has a syntax error, contains an invalid BOM placement, or is otherwise not valid JSON for schema version 1. | Fix the JSON syntax or regenerate the baseline; a malformed file is never rewritten. |
+| `baseline-too-deep` | A complete JSON document exceeds the supported nesting depth. This is distinct from `baseline-truncated`, which means the document ends before its structure is complete. | Remove unexpected nesting and regenerate the baseline if the content is intentional. |
+| `baseline-unknown-field` | An unrecognized property appears at the top level. | Remove the property or migrate the file to the supported schema. |
+| `baseline-unknown-endpoint-field` | An unrecognized property appears in an endpoint entry. | Remove the property or migrate the file to the supported schema. |
+| `baseline-field-type` | A known property has the wrong JSON type, such as a string where an array or boolean is required. | Change the value to the type required by schema version 1. |
+| `baseline-schema-unsupported` | The file declares a schema version other than the supported version 1. | Migrate the file explicitly to schema version 1; AuthSurface does not downgrade it automatically. |
+| `baseline-too-large` | The file exceeds the default 1 MiB input limit (or the limit supplied to `Read`). | Reduce the baseline size or provide an intentional, bounded maximum appropriate for the application. |
+
+For all diagnostics, inspect the `Code` and message on `AuthSurfaceBaselineException`. The original file remains byte-for-byte unchanged on failure.
+
+Endpoint identity is the case-folded normalized route pattern plus HTTP method; the readable record may retain original casing. Equivalent route literals or parameter names therefore fail with `duplicate-endpoint-identity`, while genuinely different routes remain distinct.
 
 Baseline comparison reports structured additions, removals, changes, and policy violations. Routes and methods appear only in local diagnostics; source locations, claims, tokens, request bodies, and user data are never collected. Use `AuthSurfaceScanOptions.ExcludedRoutePatterns` for intentional infrastructure exclusions. Strict fallback mode is available through `StrictFallbackPolicy` when every protected endpoint must carry endpoint-level authorization metadata.
 

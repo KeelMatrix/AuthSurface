@@ -10,6 +10,8 @@ public sealed class AuthSurfaceBaseline
     /// <summary>The first supported baseline schema version.</summary>
     public const int CurrentSchemaVersion = 1;
 
+    private const int DiagnosticPropertyNameLimit = 128;
+
     private AuthSurfaceBaseline(IEnumerable<AuthSurfaceEndpoint> endpoints)
     {
         Endpoints = endpoints.OrderBy(static endpoint => endpoint.Route, StringComparer.Ordinal)
@@ -91,12 +93,18 @@ public sealed class AuthSurfaceBaseline
                 exception);
         }
 
-        ValidateJsonSyntaxBeforeDepth(bytes);
+        byte[] jsonBytes = bytes;
+        if (jsonBytes.Length >= 3 && jsonBytes[0] == 0xEF && jsonBytes[1] == 0xBB && jsonBytes[2] == 0xBF)
+        {
+            jsonBytes = bytes[3..];
+        }
+
+        ValidateJsonSyntaxBeforeDepth(jsonBytes);
 
         JsonDocument jsonDocument;
         try
         {
-            jsonDocument = JsonDocument.Parse(bytes, JsonDocumentOptions);
+            jsonDocument = JsonDocument.Parse(jsonBytes, JsonDocumentOptions);
         }
         catch (JsonException exception)
         {
@@ -117,7 +125,7 @@ public sealed class AuthSurfaceBaseline
         BaselineDocument? document;
         try
         {
-            document = JsonSerializer.Deserialize<BaselineDocument>(bytes, JsonOptions);
+            document = JsonSerializer.Deserialize<BaselineDocument>(jsonBytes, JsonOptions);
         }
         catch (JsonException exception)
         {
@@ -259,7 +267,17 @@ public sealed class AuthSurfaceBaseline
 
     private static void ValidateJsonSyntaxBeforeDepth(byte[] bytes)
     {
-        if (bytes.All(static value => value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n'))
+        bool hasNonWhitespace = false;
+        foreach (byte value in bytes)
+        {
+            if (value is not ((byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n'))
+            {
+                hasNonWhitespace = true;
+                break;
+            }
+        }
+
+        if (!hasNonWhitespace)
         {
             throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline is empty or contains only whitespace.");
         }
@@ -389,7 +407,7 @@ public sealed class AuthSurfaceBaseline
             {
                 throw new AuthSurfaceBaselineException(
                     "baseline-duplicate-field",
-                    $"The baseline field '{property.Name}' is duplicated at {scope}.");
+                    $"The baseline field '{RenderDiagnosticPropertyName(property.Name)}' is duplicated at {scope}.");
             }
         }
 
@@ -399,9 +417,20 @@ public sealed class AuthSurfaceBaseline
             {
                 throw new AuthSurfaceBaselineException(
                     errorCode,
-                    $"The baseline field '{scope}.{property.Name}' is not declared in schema version 1.");
+                    $"The baseline field '{scope}.{RenderDiagnosticPropertyName(property.Name)}' is not declared in schema version 1.");
             }
         }
+    }
+
+    private static string RenderDiagnosticPropertyName(string propertyName)
+    {
+        const string truncationMarker = "…(truncated)";
+        if (propertyName.Length <= DiagnosticPropertyNameLimit)
+        {
+            return propertyName;
+        }
+
+        return propertyName[..(DiagnosticPropertyNameLimit - truncationMarker.Length)] + truncationMarker;
     }
 
     private static void ValidateEndpointFieldTypes(JsonElement endpoint, string path)

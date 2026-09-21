@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using AuthSurface.FixtureApp;
 using KeelMatrix.AuthSurface;
@@ -93,6 +94,40 @@ public sealed class BaselineSchemaContractTests
     }
 
     [Fact]
+    public void ValidUtf8BomPrefixedBaselineRemainsReadableWithoutRewriting()
+    {
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        byte[] bytes = WithUtf8Bom("{\"schemaVersion\":1,\"endpoints\":[]}");
+        File.WriteAllBytes(path, bytes);
+
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Read(path);
+
+        Assert.Equal(1, baseline.SchemaVersion);
+        Assert.Empty(baseline.Endpoints);
+        Assert.Equal(bytes, File.ReadAllBytes(path));
+
+        string outputPath = Path.Combine(directory.Path, "written.json");
+        baseline.Write(outputPath, overwrite: false);
+        byte[] outputBytes = File.ReadAllBytes(outputPath);
+        Assert.False(outputBytes.AsSpan().StartsWith(Encoding.UTF8.GetPreamble()));
+    }
+
+    [Fact]
+    public void MalformedUtf8BomPrefixedBaselineFailsClosedWithoutRewriting()
+    {
+        AssertRejected(WithUtf8Bom("{\"schemaVersion\":1,\"endpoints\":[],}"), "baseline-malformed");
+    }
+
+    [Fact]
+    public void Utf8BomInsideBaselineIsNotSilentlyAccepted()
+    {
+        AssertRejected(
+            WithUtf8Bom("{\"schemaVersion\":1," + "\uFEFF" + "\"endpoints\":[]}"),
+            "baseline-malformed");
+    }
+
+    [Fact]
     public void ValidV1BaselineWithDistinctEndpointsRemainsReadable()
     {
         using TemporaryDirectory directory = new();
@@ -120,6 +155,31 @@ public sealed class BaselineSchemaContractTests
             () => AuthSurfaceBaseline.Read(path, maximumBytes: 8));
 
         Assert.Equal("baseline-too-large", exception.Code);
+    }
+
+    [Fact]
+    public void LargeDuplicatePropertyNameHasBoundedDiagnosticAndPreservesFile()
+    {
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        string propertyName = new('x', 500_009);
+        byte[] bytes = Encoding.UTF8.GetBytes("{\"" + propertyName + "\":1,\"" + propertyName + "\":2}");
+        Assert.InRange(bytes.Length, 500_000, 1_048_576);
+        File.WriteAllBytes(path, bytes);
+        byte[] before = File.ReadAllBytes(path);
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+        stopwatch.Stop();
+
+        Assert.Equal("baseline-duplicate-field", exception.Code);
+        Assert.Contains("top-level", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("x", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("…(truncated)", exception.Message, StringComparison.Ordinal);
+        Assert.InRange(exception.Message.Length, 1, 256);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+        Assert.Equal(before, File.ReadAllBytes(path));
     }
 
     [Fact]
@@ -163,7 +223,17 @@ public sealed class BaselineSchemaContractTests
     [Fact]
     public void CompleteBaselineBeyondDepthBoundHasTooDeepDiagnostic()
     {
-        AssertRejected(new string('[', 40) + "0" + new string(']', 40), "baseline-too-deep");
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        string nested = new string('[', 40) + "0" + new string(']', 40);
+        File.WriteAllText(path, nested);
+        byte[] before = File.ReadAllBytes(path);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-too-deep", exception.Code);
+        Assert.Equal(before, File.ReadAllBytes(path));
     }
 
     [Fact]
@@ -200,6 +270,25 @@ public sealed class BaselineSchemaContractTests
 
         Assert.Equal(code, exception.Code);
         Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    private static void AssertRejected(byte[] bytes, string code)
+    {
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        File.WriteAllBytes(path, bytes);
+        byte[] before = File.ReadAllBytes(path);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal(code, exception.Code);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    private static byte[] WithUtf8Bom(string text)
+    {
+        return Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(text)).ToArray();
     }
 
     private static void AssertDuplicateFieldRejected(string json, string field, string location)
