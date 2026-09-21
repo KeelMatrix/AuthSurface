@@ -24,16 +24,42 @@ if ($workflow -notmatch '(?m)^\s+-\s+''v\*''\s*$') {
     throw 'Release workflow must accept version tags through the tag trigger and validate the exact format in the job.'
 }
 
+$actionPinsPath = Join-Path $root 'scripts/release-action-pins.txt'
+if (-not (Test-Path -LiteralPath $actionPinsPath -PathType Leaf)) {
+    throw "Release action pin allowlist is missing: $actionPinsPath"
+}
+
+$allowlistedActions = @(Get-Content -LiteralPath $actionPinsPath)
+if ($allowlistedActions.Count -eq 0) {
+    throw 'Release action pin allowlist must contain at least one action.'
+}
+
+foreach ($action in $allowlistedActions) {
+    if ($action -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$') {
+        throw "Release action pin allowlist contains an invalid entry: $action"
+    }
+}
+
+if (@($allowlistedActions | Sort-Object -Unique -CaseSensitive).Count -ne $allowlistedActions.Count) {
+    throw 'Release action pin allowlist contains duplicate entries.'
+}
+
 if ($workflow -notmatch '(?m)^\s+id-token:\s+write\s*$' -or
     $workflow -match '(?m)^\s+contents:\s+write\s*$') {
     throw 'Release workflow permissions are not least privilege for OIDC publishing.'
 }
 
 $uses = @([regex]::Matches($workflow, '(?m)^\s+uses:\s+([^\s]+)') | ForEach-Object { $_.Groups[1].Value })
-foreach ($action in $uses) {
-    if ($action -notmatch '@[0-9a-f]{40}$') {
-        throw "Workflow action is not pinned to a full commit SHA: $action"
-    }
+if ($uses.Count -eq 0) {
+    throw 'Release workflow must contain at least one action.'
+}
+
+$workflowActions = @($uses | Sort-Object -Unique -CaseSensitive)
+$allowlistedActions = @($allowlistedActions | Sort-Object -Unique -CaseSensitive)
+$actionPinDifferences = @(Compare-Object -ReferenceObject $allowlistedActions -DifferenceObject $workflowActions -CaseSensitive)
+if ($actionPinDifferences.Count -gt 0) {
+    $differences = $actionPinDifferences | ForEach-Object { "$($_.SideIndicator): $($_.InputObject)" }
+    throw "Release action pins must exactly match every workflow uses entry. Differences: $($differences -join '; ')"
 }
 
 if ($workflow -notmatch 'NuGet/login@[0-9a-f]{40}' -or $workflow -notmatch '(?m)^\s+user:\s+dmitriyzen\s*$') {
