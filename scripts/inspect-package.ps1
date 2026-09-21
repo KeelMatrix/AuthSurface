@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $PackagePath,
 
-    [string] $SymbolPackagePath
+    [string] $SymbolPackagePath,
+
+    [string] $ExpectedVersion = '0.1.0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,13 +62,18 @@ try {
     Write-Output "Nuspec description=$($metadata.description)"
     Write-Output "Nuspec license=$($metadata.license.'#text') repository=$($metadata.repository.url)"
 
-    if ($metadata.id -ne 'KeelMatrix.AuthSurface' -or $metadata.version -ne '0.1.0') {
+    if ($metadata.id -ne 'KeelMatrix.AuthSurface' -or $metadata.version -ne $ExpectedVersion -or
+        $metadata.authors -ne 'KeelMatrix' -or $metadata.license.type -ne 'expression' -or
+        $metadata.license.'#text' -ne 'MIT' -or $metadata.repository.url -ne 'https://github.com/KeelMatrix/AuthSurface' -or
+        $metadata.readme -ne 'README.md') {
         throw 'Package ID or version is incorrect.'
     }
 
     $dependencyNames = @($metadata.dependencies.group.dependency | ForEach-Object { $_.id } | Sort-Object -Unique)
     Write-Output "Dependencies=$($dependencyNames -join ',')"
-    if ($dependencyNames.Count -ne 1 -or $dependencyNames[0] -ne 'KeelMatrix.Telemetry') {
+    $telemetryDependency = @($metadata.dependencies.group.dependency | Where-Object id -eq 'KeelMatrix.Telemetry' | Select-Object -First 1)
+    if ($dependencyNames.Count -ne 1 -or $dependencyNames[0] -ne 'KeelMatrix.Telemetry' -or
+        $null -eq $telemetryDependency -or $telemetryDependency.version -ne '[0.1.0]') {
         throw 'Package dependency set is not exactly KeelMatrix.Telemetry.'
     }
 
@@ -81,28 +88,23 @@ try {
         throw 'net8.0 library or XML documentation entry is missing.'
     }
 
-    if ($entries -contains 'icon.png') {
-        if ($metadata.icon -ne 'icon.png') {
-            throw 'Package icon metadata is not icon.png.'
-        }
-
-        $rootIconPath = Join-Path $root 'icon.png'
-        $packedIcon = $archive.Entries | Where-Object FullName -eq 'icon.png' | Select-Object -First 1
-        $rootIconHash = (Get-FileHash -LiteralPath $rootIconPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        $iconHashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
-        try {
-            $iconStream = $packedIcon.Open()
-            try { $packedIconHash = [System.BitConverter]::ToString($iconHashAlgorithm.ComputeHash($iconStream)).Replace('-', '').ToLowerInvariant() }
-            finally { $iconStream.Dispose() }
-        }
-        finally { $iconHashAlgorithm.Dispose() }
-        Write-Output "Icon=packed icon.png SHA256=$packedIconHash root=$rootIconHash"
-        if ($packedIconHash -ne $rootIconHash) {
-            throw 'Packed icon is not byte-identical to the repository-root icon.'
-        }
+    if ($entries -notcontains 'icon.png' -or $metadata.icon -ne 'icon.png') {
+        throw 'Package icon.png or icon metadata is missing.'
     }
-    else {
-        Write-Output 'Icon=not present; founder placement remains required before a public release.'
+
+    $rootIconPath = Join-Path $root 'icon.png'
+    $packedIcon = $archive.Entries | Where-Object FullName -eq 'icon.png' | Select-Object -First 1
+    $rootIconHash = (Get-FileHash -LiteralPath $rootIconPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $iconHashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $iconStream = $packedIcon.Open()
+        try { $packedIconHash = [System.BitConverter]::ToString($iconHashAlgorithm.ComputeHash($iconStream)).Replace('-', '').ToLowerInvariant() }
+        finally { $iconStream.Dispose() }
+    }
+    finally { $iconHashAlgorithm.Dispose() }
+    Write-Output "Icon=packed icon.png SHA256=$packedIconHash root=$rootIconHash"
+    if ($packedIconHash -ne $rootIconHash) {
+        throw 'Packed icon is not byte-identical to the repository-root icon.'
     }
 }
 finally {

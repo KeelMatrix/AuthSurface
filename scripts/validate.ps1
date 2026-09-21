@@ -13,20 +13,23 @@ $root = Split-Path -Parent $PSScriptRoot
 $solution = Join-Path $root 'KeelMatrix.AuthSurface.sln'
 $library = Join-Path $root 'src/KeelMatrix.AuthSurface/KeelMatrix.AuthSurface.csproj'
 $packageDirectory = Join-Path $root 'artifacts/package'
+$version = '0.1.0'
 
 function Invoke-Gate([string] $Name, [scriptblock] $Action) {
     $timer = [System.Diagnostics.Stopwatch]::StartNew()
     Write-Host "`n=== $Name ==="
     & $Action
-    if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
+    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
     $timer.Stop()
     Write-Host ("{0}: {1:N3}s" -f $Name, $timer.Elapsed.TotalSeconds)
 }
 
 Push-Location $root
 try {
-    if (Test-Path -LiteralPath (Join-Path $root '.github/workflows')) {
-        throw 'Private repository validation does not permit workflow files.'
+    Invoke-Gate 'release workflow contract' { & (Join-Path $PSScriptRoot 'validate-release-workflow.ps1') }
+    Invoke-Gate 'release contract tests' { & (Join-Path $PSScriptRoot 'test-release-contract.ps1') }
+    Invoke-Gate 'pre-release changelog/version contract' {
+        & (Join-Path $PSScriptRoot 'check-release-contract.ps1') -Mode Candidate -Version $version
     }
 
     Invoke-Gate 'controlled restore' { dotnet restore $solution --configfile (Join-Path $root 'NuGet.config') --force-evaluate }
@@ -38,11 +41,19 @@ try {
     New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
     Get-ChildItem -LiteralPath $packageDirectory -File -ErrorAction SilentlyContinue | Remove-Item -Force
     Invoke-Gate 'package build' { dotnet pack $library -c $Configuration --no-build --no-restore -o $packageDirectory }
-    $nupkg = Get-ChildItem -LiteralPath $packageDirectory -Filter 'KeelMatrix.AuthSurface.*.nupkg' | Where-Object Name -notlike '*.snupkg' | Select-Object -First 1
-    if ($null -eq $nupkg) { throw 'No package was produced.' }
-    $snupkg = Get-ChildItem -LiteralPath $packageDirectory -Filter 'KeelMatrix.AuthSurface.*.snupkg' | Select-Object -First 1
-    if ($null -eq $snupkg) { throw 'No symbol package was produced.' }
-    Invoke-Gate 'package inspection' { & (Join-Path $PSScriptRoot 'inspect-package.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName }
+    $expectedArtifacts = @(
+        "KeelMatrix.AuthSurface.$version.nupkg",
+        "KeelMatrix.AuthSurface.$version.snupkg"
+    )
+    $actualArtifacts = @(Get-ChildItem -LiteralPath $packageDirectory -File | Select-Object -ExpandProperty Name | Sort-Object)
+    if (@(Compare-Object -ReferenceObject $expectedArtifacts -DifferenceObject $actualArtifacts).Count -gt 0) {
+        throw "Unexpected package artifact set. Expected: $($expectedArtifacts -join ', '); actual: $($actualArtifacts -join ', ')"
+    }
+    $nupkg = Get-Item -LiteralPath (Join-Path $packageDirectory $expectedArtifacts[0])
+    $snupkg = Get-Item -LiteralPath (Join-Path $packageDirectory $expectedArtifacts[1])
+    Invoke-Gate 'package inspection' {
+        & (Join-Path $PSScriptRoot 'inspect-package.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName -ExpectedVersion $version
+    }
     Invoke-Gate 'dependency vulnerability check' { dotnet list $solution package --vulnerable --include-transitive --format json }
     Invoke-Gate 'clean package consumer smoke' { & (Join-Path $PSScriptRoot 'consumer-smoke.ps1') -PackagePath $nupkg.FullName }
 
