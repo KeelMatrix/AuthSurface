@@ -60,7 +60,7 @@ try {
 
     $forbiddenPattern = 'Paper' + 'clip|Cod' + 'ex|KEE-' + '[0-9]+'
     $validatorPath = 'scripts/validate.ps1'
-    $rgPath = Get-Command rg -CommandType Application -ErrorAction Stop |
+    $rgPath = Get-Command rg -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1 -ExpandProperty Source
     $trackedFiles = @(git -C $root ls-files)
     if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate tracked product files.' }
@@ -69,7 +69,13 @@ try {
         if ($normalizedPath -eq $validatorPath) { continue }
 
         $fullPath = Join-Path $root $relativePath
-        & $rgPath -n --no-heading --no-messages $forbiddenPattern -- $fullPath 2>$null
+        if ($null -ne $rgPath) {
+            & $rgPath -n --no-heading --no-messages $forbiddenPattern -- $fullPath 2>$null
+        }
+        else {
+            Select-String -LiteralPath $fullPath -Pattern $forbiddenPattern -AllMatches -ErrorAction SilentlyContinue |
+                ForEach-Object { "$($_.Path):$($_.LineNumber):$($_.Line)" }
+        }
     }
     if ($leaks.Count -gt 0) {
         $leaks | Write-Output
