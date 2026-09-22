@@ -65,7 +65,10 @@ public sealed class FingerprintContractTests
             baseline);
 
         Assert.False(result.IsValid);
-        Assert.Contains(result.Violations, violation => violation.Code == "endpoint-changed");
+        AuthSurfaceViolation violation = Assert.Single(result.Violations);
+        Assert.Equal("endpoint-requirement-changed", violation.Code);
+        Assert.Contains("fingerprint=", violation.Expected, StringComparison.Ordinal);
+        Assert.Contains("fingerprint=", violation.Actual, StringComparison.Ordinal);
     }
 
     [Fact]

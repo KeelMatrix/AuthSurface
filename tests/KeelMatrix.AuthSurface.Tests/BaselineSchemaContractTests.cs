@@ -82,6 +82,14 @@ public sealed class BaselineSchemaContractTests
     }
 
     [Fact]
+    public void NumericAuthorizationClassificationIsRejectedAsMalformed()
+    {
+        AssertRejected(
+            "{\"schemaVersion\":1,\"endpoints\":[{\"route\":\"/orders\",\"methods\":[\"GET\"],\"authorization\":\"999\",\"policies\":[],\"roles\":[],\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false,\"requirements\":[],\"requirementFingerprint\":\"" + new string('0', 64) + "\"}]}",
+            "baseline-malformed");
+    }
+
+    [Fact]
     public void CrLfBaselineInputRemainsReadable()
     {
         using TemporaryDirectory directory = new();
@@ -227,6 +235,45 @@ public sealed class BaselineSchemaContractTests
 
         Assert.Equal(1, baseline.SchemaVersion);
         Assert.Equal(["/first", "/second"], baseline.Endpoints.Select(static endpoint => endpoint.Route));
+    }
+
+    [Fact]
+    public void ValidV1BaselineRoundTripsTheCorrectedCanonicalRequirementContract()
+    {
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthorizationPolicy policy = new AuthorizationPolicyBuilder()
+            .RequireClaim("scope", "read|write", " admin ", string.Empty)
+            .Build();
+        string[] requirements = AuthSurfaceCanonicalizer.CanonicalizeRequirements(policy);
+        AuthSurfaceEndpoint endpoint = new(
+            "/scope",
+            "GET",
+            AuthSurfaceAuthorizationKind.ExplicitProtected,
+            [],
+            [],
+            [],
+            usesDefaultPolicy: false,
+            usesFallbackPolicy: false,
+            requirements,
+            AuthSurfaceCanonicalizer.Fingerprint(
+                AuthSurfaceAuthorizationKind.ExplicitProtected,
+                [],
+                [],
+                [],
+                usesDefaultPolicy: false,
+                usesFallbackPolicy: false,
+                requirements));
+        AuthSurfaceBaseline original = AuthSurfaceBaseline.Create(new AuthSurfaceReport([endpoint], []));
+        original.Write(path, overwrite: false);
+
+        AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+        string secondPath = Path.Combine(directory.Path, "roundtrip.json");
+        roundTrip.Write(secondPath, overwrite: false);
+
+        Assert.Equal(File.ReadAllBytes(path), File.ReadAllBytes(secondPath));
+        Assert.Equal(original.Endpoints[0].Requirements, roundTrip.Endpoints[0].Requirements);
+        Assert.Equal(1, roundTrip.SchemaVersion);
     }
 
     [Fact]

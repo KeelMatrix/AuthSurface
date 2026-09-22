@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Candidate', 'Release')]
+    [ValidateSet('Candidate', 'Main', 'Release')]
     [string] $Mode = 'Candidate',
 
     [Parameter(Mandatory = $true)]
@@ -75,6 +75,25 @@ $nextHeading = [regex]::Match($changelog.Substring($heading.Index + $heading.Len
 $entryLength = if ($nextHeading.Success) { $nextHeading.Index } else { $changelog.Length - ($heading.Index + $heading.Length) }
 $entry = $changelog.Substring($heading.Index, $heading.Length + $entryLength)
 
+function Assert-FinalizedEntry([string] $HeadingValue, [string] $EntryText, [string] $ReleaseVersion) {
+    if ($HeadingValue -notmatch "^##\s+\[$([regex]::Escape($ReleaseVersion))\]\s+-\s+\d{4}-\d{2}-\d{2}\s*$") {
+        throw "Release changelog entry must use '## [$ReleaseVersion] - YYYY-MM-DD'."
+    }
+
+    if ($EntryText -match '(?i)\b(?:unreleased|planned|pre-release|pre release|not yet published|tbd|pending)\b') {
+        throw "Release changelog entry for '$ReleaseVersion' still contains pre-release wording."
+    }
+
+    $categories = @([regex]::Matches($EntryText, '(?m)^###\s+(.+?)\s*$') | ForEach-Object { $_.Groups[1].Value.Trim() })
+    if ($categories.Count -ne 1 -or $categories[0] -ne 'Added') {
+        throw "The first public release changelog entry must contain only an Added section."
+    }
+
+    if ($EntryText -match '(?i)\b(?:now|no longer|previously|formerly|used to|fixed|fixes|corrected|resolved|addressed|this removes|this fixes|changed from)\b') {
+        throw 'The first public release changelog entry contains pre-release remediation wording.'
+    }
+}
+
 if ($Mode -eq 'Candidate') {
     if ($entry -notmatch '(?i)\b(?:unreleased|planned|pre-release|pre release|not yet published|tbd|pending)\b') {
         throw "Candidate changelog entry for '$Version' is not clearly pre-release."
@@ -84,21 +103,18 @@ if ($Mode -eq 'Candidate') {
     exit 0
 }
 
-if ($heading.Value -notmatch "^##\s+\[$([regex]::Escape($Version))\]\s+-\s+\d{4}-\d{2}-\d{2}\s*$") {
-    throw "Release changelog entry must use '## [$Version] - YYYY-MM-DD'."
+if ($Mode -eq 'Main') {
+    $hasFinalizedHeading = $heading.Value -match "^##\s+\[$([regex]::Escape($Version))\]\s+-"
+    if (-not $hasFinalizedHeading -and
+        $entry -match '(?i)\b(?:unreleased|planned|pre-release|pre release|not yet published|tbd|pending)\b') {
+        Write-Output "Main changelog contract passed for $($Version): target remains pre-release."
+        exit 0
+    }
+
+    Assert-FinalizedEntry $heading.Value $entry $Version
+    Write-Output "Main changelog contract passed for $($Version): finalized entry is consistent."
+    exit 0
 }
 
-if ($entry -match '(?i)\b(?:unreleased|planned|pre-release|pre release|not yet published|tbd|pending)\b') {
-    throw "Release changelog entry for '$Version' still contains pre-release wording."
-}
-
-$categories = @([regex]::Matches($entry, '(?m)^###\s+(.+?)\s*$') | ForEach-Object { $_.Groups[1].Value.Trim() })
-if ($categories.Count -ne 1 -or $categories[0] -ne 'Added') {
-    throw "The first public release changelog entry must contain only an Added section."
-}
-
-if ($entry -match '(?i)\b(?:now|no longer|previously|formerly|used to|fixed|fixes|corrected|resolved|addressed|this removes|this fixes|changed from)\b') {
-    throw 'The first public release changelog entry contains pre-release remediation wording.'
-}
-
+Assert-FinalizedEntry $heading.Value $entry $Version
 Write-Output "Release changelog contract passed for $($Version)."

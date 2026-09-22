@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace KeelMatrix.AuthSurface;
 
 /// <summary>Represents one canonical runtime route and HTTP method authorization contract.</summary>
@@ -16,14 +18,14 @@ public sealed class AuthSurfaceEndpoint
         string requirementFingerprint)
     {
         Route = route;
-        Methods = [method];
+        Methods = ImmutableArray.Create(method);
         AuthorizationKind = authorizationKind;
-        Policies = policies.ToArray();
-        Roles = roles.ToArray();
-        AuthenticationSchemes = authenticationSchemes.ToArray();
+        Policies = policies.ToImmutableArray();
+        Roles = roles.ToImmutableArray();
+        AuthenticationSchemes = authenticationSchemes.ToImmutableArray();
         UsesDefaultPolicy = usesDefaultPolicy;
         UsesFallbackPolicy = usesFallbackPolicy;
-        Requirements = requirements.ToArray();
+        Requirements = requirements.ToImmutableArray();
         RequirementFingerprint = requirementFingerprint;
     }
 
@@ -60,4 +62,16 @@ public sealed class AuthSurfaceEndpoint
     internal string Method => Methods[0];
 
     internal string Identity => AuthSurfaceCanonicalizer.CanonicalIdentity(Route, Method);
+
+    internal AuthSurfaceEndpoint Clone() => new(
+        Route,
+        Method,
+        AuthorizationKind,
+        Policies,
+        Roles,
+        AuthenticationSchemes,
+        UsesDefaultPolicy,
+        UsesFallbackPolicy,
+        Requirements,
+        RequirementFingerprint);
 }

@@ -33,6 +33,38 @@ function Assert-Rejected([string] $Name, [scriptblock] $Mutation) {
 
 & $validator -Root $sourceRoot
 
+$releaseWorkflow = Get-Content -LiteralPath (Join-Path $sourceRoot '.github/workflows/release.yml') -Raw
+$pushCommands = @([regex]::Matches($releaseWorkflow, '(?m)^\s*dotnet nuget push\s+.*$') | ForEach-Object { $_.Value.Trim() })
+if ($pushCommands.Count -ne 1 -or $pushCommands[0] -notmatch '\.nupkg') {
+    throw 'Release workflow must use one package push that covers the associated symbol package.'
+}
+if ($pushCommands[0] -match '\.snupkg') {
+    throw 'Release workflow must not push the symbol package a second time.'
+}
+if ($releaseWorkflow -notmatch '(?ms)dotnet nuget push.*?\r?\n\s*if \(\$LASTEXITCODE -ne 0\)') {
+    throw 'Release workflow must check the publication command exit code immediately.'
+}
+
+function Invoke-CheckedNative([scriptblock] $Command) {
+    & $Command
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "Native command failed with exit code $exitCode."
+    }
+}
+
+$publicationFailureRejected = $false
+try {
+    Invoke-CheckedNative { dotnet --authsurface-release-test-invalid-option }
+}
+catch {
+    $publicationFailureRejected = $true
+    Write-Output 'publication command failure: rejected as expected'
+}
+if (-not $publicationFailureRejected) {
+    throw 'Publication command failure was accepted unexpectedly.'
+}
+
 Assert-Rejected 'unpinned action' {
     param($testRoot)
     $ciPath = Join-Path $testRoot '.github/workflows/ci.yml'
@@ -69,4 +101,4 @@ Assert-Rejected 'workflow action missing from allowlist' {
     Set-Content -LiteralPath $ciPath -Value $ci -Encoding utf8
 }
 
-Write-Output 'Workflow validator mutation tests passed: real workflows, unpinned action, tag reference, annotated tag object SHA, and missing allowlist entry.'
+Write-Output 'Workflow validator mutation tests passed: real workflows, operational single-push/exit-code checks, publication failure control, unpinned action, tag reference, annotated tag object SHA, and missing allowlist entry.'

@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace KeelMatrix.AuthSurface;
 
 /// <summary>Contains the structured result of policy or baseline verification.</summary>
@@ -5,7 +7,7 @@ public sealed class AuthSurfaceVerificationResult
 {
     internal AuthSurfaceVerificationResult(IEnumerable<AuthSurfaceViolation> violations, bool usedBaseline)
     {
-        Violations = violations.ToArray();
+        Violations = violations.ToImmutableArray();
         UsedBaseline = usedBaseline;
     }
 

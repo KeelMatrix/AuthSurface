@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace KeelMatrix.AuthSurface;
 
 /// <summary>Contains the complete deterministic result of one runtime endpoint scan.</summary>
@@ -5,8 +7,8 @@ public sealed class AuthSurfaceReport
 {
     internal AuthSurfaceReport(IEnumerable<AuthSurfaceEndpoint> endpoints, IEnumerable<AuthSurfaceViolation> policyViolations)
     {
-        Endpoints = endpoints.ToArray();
-        PolicyViolations = policyViolations.ToArray();
+        Endpoints = endpoints.Select(static endpoint => endpoint.Clone()).ToImmutableArray();
+        PolicyViolations = policyViolations.ToImmutableArray();
     }
 
     /// <summary>Gets the canonical endpoint records in deterministic order.</summary>

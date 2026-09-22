@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace KeelMatrix.AuthSurface;
 
 /// <summary>Performs policy and deterministic baseline comparisons.</summary>
@@ -48,14 +50,7 @@ public static class AuthSurfaceVerifier
 
             if (!Equivalent(expectedEndpoint, endpoint))
             {
-                violations.Add(
-                    new AuthSurfaceViolation(
-                        "endpoint-changed",
-                        $"Endpoint '{endpoint.Route}' [{endpoint.Method}] authorization metadata changed.",
-                        endpoint.Route,
-                        endpoint.Method,
-                        expected: expectedEndpoint.RequirementFingerprint,
-                        actual: endpoint.RequirementFingerprint));
+                violations.AddRange(Diff(expectedEndpoint, endpoint));
             }
         }
 
@@ -88,6 +83,7 @@ public static class AuthSurfaceVerifier
         Compare(report, AuthSurfaceBaseline.Read(baselinePath));
 
     private static bool Equivalent(AuthSurfaceEndpoint expected, AuthSurfaceEndpoint actual) =>
+        expected.Route == actual.Route &&
         expected.AuthorizationKind == actual.AuthorizationKind &&
         expected.UsesDefaultPolicy == actual.UsesDefaultPolicy &&
         expected.UsesFallbackPolicy == actual.UsesFallbackPolicy &&
@@ -96,6 +92,120 @@ public static class AuthSurfaceVerifier
         expected.Roles.SequenceEqual(actual.Roles, StringComparer.Ordinal) &&
         expected.AuthenticationSchemes.SequenceEqual(actual.AuthenticationSchemes, StringComparer.Ordinal) &&
         expected.Requirements.SequenceEqual(actual.Requirements, StringComparer.Ordinal);
+
+    private static IEnumerable<AuthSurfaceViolation> Diff(AuthSurfaceEndpoint expected, AuthSurfaceEndpoint actual)
+    {
+        if (expected.Route != actual.Route)
+        {
+            yield return Change(
+                "endpoint-route-changed",
+                "route pattern",
+                expected,
+                actual,
+                expected.Route,
+                actual.Route);
+        }
+
+        if (expected.AuthorizationKind != actual.AuthorizationKind)
+        {
+            yield return Change(
+                "endpoint-classification-changed",
+                "authorization classification",
+                expected,
+                actual,
+                expected.AuthorizationKind.ToString(),
+                actual.AuthorizationKind.ToString());
+        }
+
+        if (!expected.Policies.SequenceEqual(actual.Policies, StringComparer.Ordinal))
+        {
+            yield return Change(
+                "endpoint-policy-changed",
+                "named policies",
+                expected,
+                actual,
+                FormatList(expected.Policies),
+                FormatList(actual.Policies));
+        }
+
+        if (!expected.Roles.SequenceEqual(actual.Roles, StringComparer.Ordinal))
+        {
+            yield return Change(
+                "endpoint-role-changed",
+                "roles",
+                expected,
+                actual,
+                FormatList(expected.Roles),
+                FormatList(actual.Roles));
+        }
+
+        if (!expected.AuthenticationSchemes.SequenceEqual(actual.AuthenticationSchemes, StringComparer.Ordinal))
+        {
+            yield return Change(
+                "endpoint-scheme-changed",
+                "authentication schemes",
+                expected,
+                actual,
+                FormatList(expected.AuthenticationSchemes),
+                FormatList(actual.AuthenticationSchemes));
+        }
+
+        if (expected.UsesDefaultPolicy != actual.UsesDefaultPolicy)
+        {
+            yield return Change(
+                "endpoint-default-policy-changed",
+                "default-policy contribution",
+                expected,
+                actual,
+                expected.UsesDefaultPolicy.ToString().ToLowerInvariant(),
+                actual.UsesDefaultPolicy.ToString().ToLowerInvariant());
+        }
+
+        if (expected.UsesFallbackPolicy != actual.UsesFallbackPolicy)
+        {
+            yield return Change(
+                "endpoint-fallback-policy-changed",
+                "fallback-policy contribution",
+                expected,
+                actual,
+                expected.UsesFallbackPolicy.ToString().ToLowerInvariant(),
+                actual.UsesFallbackPolicy.ToString().ToLowerInvariant());
+        }
+
+        if (expected.RequirementFingerprint != actual.RequirementFingerprint ||
+            !expected.Requirements.SequenceEqual(actual.Requirements, StringComparer.Ordinal))
+        {
+            yield return Change(
+                "endpoint-requirement-changed",
+                "effective requirements",
+                expected,
+                actual,
+                FormatRequirements(expected),
+                FormatRequirements(actual));
+        }
+    }
+
+    private static AuthSurfaceViolation Change(
+        string code,
+        string label,
+        AuthSurfaceEndpoint expected,
+        AuthSurfaceEndpoint actual,
+        string expectedValue,
+        string actualValue) =>
+        new(
+            code,
+            $"Endpoint '{actual.Route}' [{actual.Method}] {label} changed from {expectedValue} to {actualValue}.",
+            actual.Route,
+            actual.Method,
+            expectedValue,
+            actualValue);
+
+    private static string FormatList(IEnumerable<string> values) =>
+        JsonSerializer.Serialize(values.ToArray());
+
+    private static string FormatRequirements(AuthSurfaceEndpoint endpoint) =>
+        "requirements=" + FormatList(endpoint.Requirements) +
+        "; fingerprint=" + endpoint.RequirementFingerprint;
 
     private static int CompareViolations(AuthSurfaceViolation left, AuthSurfaceViolation right)
     {

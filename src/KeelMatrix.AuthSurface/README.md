@@ -10,27 +10,37 @@ dotnet add package KeelMatrix.AuthSurface --version 0.1.0
 
 ## Quick start
 
-Resolve runtime services after the application has been built and endpoint data sources have been constructed:
+Build and start the host before scanning so endpoint data sources and authorization metadata are complete:
 
 ```csharp
 using KeelMatrix.AuthSurface;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 
+await app.StartAsync();
 var scanner = new AuthSurfaceScanner(
     app.Services.GetServices<EndpointDataSource>(),
     app.Services.GetRequiredService<IAuthorizationPolicyProvider>());
 AuthSurfaceReport report = await scanner.ScanAsync();
 report.AssertPolicyCompliant();
-
-string baselinePath = Path.Combine("tests", "authsurface.json");
-AuthSurfaceBaseline.Create(report, baselinePath, overwrite: false);
-AuthSurfaceVerifier.Compare(report, baselinePath).AssertValid();
 ```
 
-### Baseline creation and updates
+### One-time baseline creation
 
-Create a baseline explicitly with `AuthSurfaceBaseline.Create(report, path, overwrite: false)`, review it, and commit it. Comparison never creates or rewrites a baseline. Update it only through an intentional command or test change that calls `Write(..., overwrite: true)` after reviewing the current scan.
+After reviewing the first report, create and commit the baseline exactly once:
+
+```csharp
+AuthSurfaceBaseline.Create(report, "authsurface.json", overwrite: false);
+```
+
+### Recurring comparison test
+
+The recurring test reads the accepted baseline and never creates or rewrites it:
+
+```csharp
+AuthSurfaceVerifier.Compare(report, "authsurface.json").AssertValid();
+```
 
 ## What the scan records
 
@@ -68,7 +78,11 @@ The four classifications are:
 
 For all diagnostics, inspect the `Code` and message on `AuthSurfaceBaselineException`. The original file remains byte-for-byte unchanged on failure.
 
-Endpoint identity is the case-folded normalized route pattern plus HTTP method; the readable record may retain original casing. Equivalent route literals or parameter names therefore fail with `duplicate-endpoint-identity`, while genuinely different routes remain distinct.
+An endpoint entry requires `route`, exactly one `methods` value, one of the four exact authorization names, `policies`, `roles`, `schemes`, `requirements`, and a 64-character hexadecimal `requirementFingerprint`. `usesDefaultPolicy` and `usesFallbackPolicy` are supported boolean fields and default to `false` when omitted. Schema version 1 is strict about unknown fields and classification names; future schema versions require an explicit migration rather than silent reinterpretation. Under SemVer, a future incompatible baseline representation requires a new schema version and documented migration behavior.
+
+If the scan finds no endpoints, verify that the host was started and that endpoint data sources were resolved after route mapping; do not create an empty baseline until that is intentional. A `policy-resolution-failed` result means the application's real policy provider could not resolve a named policy, so register the provider and scan the completed host again. A `duplicate-endpoint-identity` result means two runtime endpoints normalize to one route/method identity; disambiguate or explicitly exclude the infrastructure endpoint before creating a baseline.
+
+Endpoint identity is the normalized route pattern plus HTTP method. Routing-equivalent route literals and parameter names are case-folded, while constraint names and arguments, defaults, and other semantically significant pattern content remain intact. For example, `regex(^\\d+$)` and `regex(^\\D+$)` are different identities. The readable record may retain original casing. Equivalent route literals or parameter names therefore fail with `duplicate-endpoint-identity`, while genuinely different routes remain distinct. Programmatically constructed patterns without `RawText` use the same deterministic renderer; encoded-slash catch-alls render as `{*name}` and non-encoded catch-alls as `{**name}`.
 
 Baseline comparison reports structured additions, removals, changes, and policy violations. Routes and methods appear only in local diagnostics; source locations, claims, tokens, request bodies, and user data are never collected. Use `AuthSurfaceScanOptions.ExcludedRoutePatterns` for intentional infrastructure exclusions. Strict fallback mode is available through `StrictFallbackPolicy` when every protected endpoint must carry endpoint-level authorization metadata.
 

@@ -137,7 +137,11 @@ public sealed class AuthSurfaceScanner
     {
         IReadOnlyList<IAuthorizeData> authorizeData = endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>();
         IReadOnlyList<AuthorizationPolicy> explicitPolicies = endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>();
-        bool hasExplicitAuthorization = authorizeData.Count > 0 || explicitPolicies.Count > 0;
+        IReadOnlyList<IAuthorizationRequirementData> requirementData =
+            endpoint.Metadata.GetOrderedMetadata<IAuthorizationRequirementData>();
+        bool hasExplicitAuthorization = authorizeData.Count > 0 ||
+            explicitPolicies.Count > 0 ||
+            requirementData.Count > 0;
         bool isAnonymous = endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null;
         AuthorizationPolicy? effectivePolicy = null;
 
@@ -149,6 +153,23 @@ public sealed class AuthSurfaceScanner
                     policyProvider,
                     authorizeData,
                     explicitPolicies).WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                if (requirementData.Count > 0)
+                {
+                    var requirementPolicyBuilder = new AuthorizationPolicyBuilder();
+                    foreach (IAuthorizationRequirementData metadata in requirementData)
+                    {
+                        foreach (IAuthorizationRequirement requirement in metadata.GetRequirements())
+                        {
+                            requirementPolicyBuilder.AddRequirements(requirement);
+                        }
+                    }
+
+                    AuthorizationPolicy requirementPolicy = requirementPolicyBuilder.Build();
+                    effectivePolicy = effectivePolicy is null
+                        ? requirementPolicy
+                        : AuthorizationPolicy.Combine(effectivePolicy, requirementPolicy);
+                }
             }
             catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
             {
@@ -186,11 +207,20 @@ public sealed class AuthSurfaceScanner
         string[] policyRoles = effectivePolicy is null
             ? []
             : effectivePolicy.Requirements.OfType<RolesAuthorizationRequirement>().SelectMany(static requirement => requirement.AllowedRoles).ToArray();
-        string[] roles = AuthSurfaceCanonicalizer.OrderedDistinct(rolesFromMetadata.Concat(policyRoles));
-        string[] schemes = AuthSurfaceCanonicalizer.OrderedDistinct(
-            schemesFromMetadata.Concat(effectivePolicy?.AuthenticationSchemes ?? []));
+        string[] roles = rolesFromMetadata
+            .Concat(AuthSurfaceCanonicalizer.OrderedDistinctExact(policyRoles))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static value => value, StringComparer.Ordinal)
+            .ToArray();
+        string[] schemes = schemesFromMetadata
+            .Concat(AuthSurfaceCanonicalizer.OrderedDistinctExact(effectivePolicy?.AuthenticationSchemes ?? []))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static value => value, StringComparer.Ordinal)
+            .ToArray();
         string[] requirements = AuthSurfaceCanonicalizer.CanonicalizeRequirements(effectivePolicy);
-        bool usesDefaultPolicy = !isAnonymous && authorizeData.Any(static data => string.IsNullOrWhiteSpace(data.Policy));
+        bool usesDefaultPolicy = !isAnonymous &&
+            explicitPolicies.Count == 0 &&
+            authorizeData.Any(IsDefaultAuthorizeData);
         string fingerprint = AuthSurfaceCanonicalizer.Fingerprint(
             kind,
             policies,
@@ -210,6 +240,11 @@ public sealed class AuthSurfaceScanner
             requirements,
             fingerprint);
     }
+
+    private static bool IsDefaultAuthorizeData(IAuthorizeData data) =>
+        string.IsNullOrWhiteSpace(data.Policy) &&
+        string.IsNullOrWhiteSpace(data.Roles) &&
+        string.IsNullOrWhiteSpace(data.AuthenticationSchemes);
 
     private sealed record EndpointAuthorizationFacts(
         AuthSurfaceAuthorizationKind AuthorizationKind,

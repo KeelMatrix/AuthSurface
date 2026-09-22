@@ -45,16 +45,24 @@ jobs:
         run: pwsh -NoProfile -File .\scripts\check-release-contract.ps1 -Mode Release -Version $env:RELEASE_VERSION -Tag '${{ github.ref_name }}'
 
       - name: Restore
-        run: dotnet restore .\KeelMatrix.AuthSurface.sln --configfile .\NuGet.config --no-cache --force
+        shell: pwsh
+        run: |
+          dotnet restore .\KeelMatrix.AuthSurface.sln --configfile .\NuGet.config --no-cache --force
+          if ($LASTEXITCODE -ne 0) { throw "Restore failed with exit code $LASTEXITCODE." }
 
       - name: Build
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
-        run: dotnet build .\KeelMatrix.AuthSurface.sln --configuration Release --no-restore -p:Version=$env:RELEASE_VERSION -p:PackageVersion=$env:RELEASE_VERSION
+        run: |
+          dotnet build .\KeelMatrix.AuthSurface.sln --configuration Release --no-restore -p:Version=$env:RELEASE_VERSION -p:PackageVersion=$env:RELEASE_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE." }
 
       - name: Test
-        run: dotnet test .\KeelMatrix.AuthSurface.sln --configuration Release --no-build --no-restore --logger 'console;verbosity=minimal'
+        shell: pwsh
+        run: |
+          dotnet test .\KeelMatrix.AuthSurface.sln --configuration Release --no-build --no-restore --logger 'console;verbosity=minimal'
+          if ($LASTEXITCODE -ne 0) { throw "Test failed with exit code $LASTEXITCODE." }
 
       - name: Pack
         shell: pwsh
@@ -65,6 +73,7 @@ jobs:
           New-Item -ItemType Directory -Path $output -Force | Out-Null
           Get-ChildItem -LiteralPath $output -File -ErrorAction SilentlyContinue | Remove-Item -Force
           dotnet pack .\src\KeelMatrix.AuthSurface\KeelMatrix.AuthSurface.csproj --configuration Release --no-build --no-restore --include-symbols --p:SymbolPackageFormat=snupkg -p:Version=$env:RELEASE_VERSION -p:PackageVersion=$env:RELEASE_VERSION --output $output
+          if ($LASTEXITCODE -ne 0) { throw "Pack failed with exit code $LASTEXITCODE." }
 
       - name: Validate exact package set and contents
         shell: pwsh
@@ -81,6 +90,7 @@ jobs:
             throw "Unexpected package artifact set. Expected: $($expected -join ', '); actual: $($actual -join ', ')"
           }
           & .\scripts\inspect-package.ps1 -PackagePath (Join-Path $output $expected[0]) -SymbolPackagePath (Join-Path $output $expected[1]) -ExpectedVersion $env:RELEASE_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "Package inspection failed with exit code $LASTEXITCODE." }
 
       - name: Authenticate to NuGet.org
         id: nuget-login
@@ -96,5 +106,5 @@ jobs:
         run: |
           $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts/packages'
           $source = 'https://api.nuget.org/v3/index.json'
-          dotnet nuget push (Join-Path $output "KeelMatrix.AuthSurface.${env:RELEASE_VERSION}.nupkg") --source $source --api-key $env:NUGET_PUSH_TOKEN
-          dotnet nuget push (Join-Path $output "KeelMatrix.AuthSurface.${env:RELEASE_VERSION}.snupkg") --source $source --api-key $env:NUGET_PUSH_TOKEN
+          dotnet nuget push (Join-Path $output "KeelMatrix.AuthSurface.${env:RELEASE_VERSION}.nupkg") --source $source --api-key $env:NUGET_PUSH_TOKEN --symbol-source 'https://symbols.nuget.org/upload' --symbol-api-key $env:NUGET_PUSH_TOKEN
+          if ($LASTEXITCODE -ne 0) { throw "Package and symbol publication failed with exit code $LASTEXITCODE." }

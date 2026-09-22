@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -16,7 +17,8 @@ public sealed class AuthSurfaceBaseline
     {
         Endpoints = endpoints.OrderBy(static endpoint => endpoint.Route, StringComparer.Ordinal)
             .ThenBy(static endpoint => endpoint.Methods[0], StringComparer.Ordinal)
-            .ToArray();
+            .Select(static endpoint => endpoint.Clone())
+            .ToImmutableArray();
     }
 
     /// <summary>Gets the schema version written by this package.</summary>
@@ -535,7 +537,10 @@ public sealed class AuthSurfaceBaseline
             throw new AuthSurfaceBaselineException("baseline-malformed", "A baseline endpoint record is incomplete.");
         }
 
-        if (!Enum.TryParse(document.Authorization, ignoreCase: false, out AuthSurfaceAuthorizationKind kind))
+        if (document.Authorization is null ||
+            !Enum.GetNames<AuthSurfaceAuthorizationKind>().Contains(document.Authorization, StringComparer.Ordinal) ||
+            !Enum.TryParse(document.Authorization, ignoreCase: false, out AuthSurfaceAuthorizationKind kind) ||
+            !Enum.IsDefined(kind))
         {
             throw new AuthSurfaceBaselineException("baseline-malformed", "A baseline endpoint has an unknown authorization classification.");
         }
@@ -550,8 +555,8 @@ public sealed class AuthSurfaceBaseline
             document.Methods[0],
             kind,
             AuthSurfaceCanonicalizer.OrderedDistinct(document.Policies),
-            AuthSurfaceCanonicalizer.OrderedDistinct(document.Roles),
-            AuthSurfaceCanonicalizer.OrderedDistinct(document.Schemes),
+            AuthSurfaceCanonicalizer.OrderedDistinctExact(document.Roles),
+            AuthSurfaceCanonicalizer.OrderedDistinctExact(document.Schemes),
             document.UsesDefaultPolicy,
             document.UsesFallbackPolicy,
             document.Requirements.OrderBy(static value => value, StringComparer.Ordinal),

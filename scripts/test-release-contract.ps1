@@ -47,7 +47,20 @@ Initial pre-release implementation.
 - Provides deterministic runtime authorization-surface checks.
 '@
     Set-Content -LiteralPath (Join-Path $root 'CHANGELOG.md') -Value $finalized -Encoding utf8
+    & $contract -Root $root -Mode Main -Version '0.1.0'
     & $contract -Root $root -Mode Release -Version '0.1.0' -Tag 'v0.1.0'
+
+    $unfinishedFinalizedHeading = $finalized.Replace('### Added', '### Added').Replace('Provides deterministic', 'Pending release: provides deterministic')
+    Set-Content -LiteralPath (Join-Path $root 'CHANGELOG.md') -Value $unfinishedFinalizedHeading -Encoding utf8
+    $unfinishedFinalizedRejected = $false
+    try { & $contract -Root $root -Mode Main -Version '0.1.0' }
+    catch { $unfinishedFinalizedRejected = $true }
+    if (-not $unfinishedFinalizedRejected) { throw 'Main mode accepted a finalized heading with unfinished wording.' }
+
+    $versionMismatchRejected = $false
+    try { & $contract -Root $root -Mode Main -Version '0.2.0' }
+    catch { $versionMismatchRejected = $true }
+    if (-not $versionMismatchRejected) { throw 'Main mode accepted a version mismatch.' }
 
     $mismatchRejected = $false
     try { & $contract -Root $root -Mode Release -Version '0.1.0' -Tag 'v0.2.0' }
@@ -61,7 +74,7 @@ Initial pre-release implementation.
     catch { $remediationRejected = $true }
     if (-not $remediationRejected) { throw 'Release mode accepted first-release remediation wording.' }
 
-    Write-Output 'Release contract tests passed: candidate, planned rejection, finalized release, tag mismatch, and remediation rejection.'
+    Write-Output 'Release contract tests passed: candidate, planned rejection, finalized main/release, unfinished finalized rejection, tag mismatch, version mismatch, and remediation rejection.'
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

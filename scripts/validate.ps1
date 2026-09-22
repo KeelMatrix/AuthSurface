@@ -29,8 +29,8 @@ try {
     Invoke-Gate 'release workflow contract' { & (Join-Path $PSScriptRoot 'validate-release-workflow.ps1') }
     Invoke-Gate 'release workflow validator mutation tests' { & (Join-Path $PSScriptRoot 'test-release-workflow.ps1') }
     Invoke-Gate 'release contract tests' { & (Join-Path $PSScriptRoot 'test-release-contract.ps1') }
-    Invoke-Gate 'pre-release changelog/version contract' {
-        & (Join-Path $PSScriptRoot 'check-release-contract.ps1') -Mode Candidate -Version $version
+    Invoke-Gate 'main changelog/version contract' {
+        & (Join-Path $PSScriptRoot 'check-release-contract.ps1') -Mode Main -Version $version
     }
 
     Invoke-Gate 'controlled restore' { dotnet restore $solution --configfile (Join-Path $root 'NuGet.config') --force-evaluate }
@@ -55,8 +55,30 @@ try {
     Invoke-Gate 'package inspection' {
         & (Join-Path $PSScriptRoot 'inspect-package.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName -ExpectedVersion $version
     }
-    Invoke-Gate 'dependency vulnerability check' { dotnet list $solution package --vulnerable --include-transitive --format json }
+    $vulnerabilityReportPath = Join-Path ([System.IO.Path]::GetTempPath()) ('authsurface-vulnerabilities-' + [guid]::NewGuid().ToString('N') + '.json')
+    try {
+        Write-Host "`n=== dependency vulnerability audit ==="
+        $auditTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        $auditOutput = & dotnet list $solution package --vulnerable --include-transitive --format json 2>&1
+        $auditExitCode = $LASTEXITCODE
+        if ($auditExitCode -ne 0) {
+            throw "Dependency vulnerability audit failed with exit code $auditExitCode."
+        }
+        $auditOutput | Set-Content -LiteralPath $vulnerabilityReportPath -Encoding utf8
+        & (Join-Path $PSScriptRoot 'check-vulnerability-report.ps1') -ReportPath $vulnerabilityReportPath
+        $checkerExitCode = $LASTEXITCODE
+        if ($checkerExitCode -ne 0) {
+            throw "Dependency vulnerability report enforcement failed with exit code $checkerExitCode."
+        }
+        $auditTimer.Stop()
+        Write-Host ("dependency vulnerability audit: {0:N3}s" -f $auditTimer.Elapsed.TotalSeconds)
+    }
+    finally {
+        Remove-Item -LiteralPath $vulnerabilityReportPath -Force -ErrorAction SilentlyContinue
+    }
     Invoke-Gate 'clean package consumer smoke' { & (Join-Path $PSScriptRoot 'consumer-smoke.ps1') -PackagePath $nupkg.FullName }
+    Invoke-Gate 'stale-cache package consumer regression' { & (Join-Path $PSScriptRoot 'test-consumer-smoke.ps1') -PackagePath $nupkg.FullName }
+    Invoke-Gate 'vulnerability gate negative test' { & (Join-Path $PSScriptRoot 'test-vulnerability-gate.ps1') }
 
     $forbiddenPattern = 'Paper' + 'clip|Cod' + 'ex|KEE-' + '[0-9]+'
     $validatorPath = 'scripts/validate.ps1'

@@ -46,6 +46,14 @@ internal static class AuthSurfaceCanonicalizer
             .OrderBy(static value => value, StringComparer.Ordinal)
             .ToArray();
 
+    internal static string[] OrderedDistinctExact(IEnumerable<string?> values) =>
+        values
+            .Where(static value => value is not null)
+            .Select(static value => value!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static value => value, StringComparer.Ordinal)
+            .ToArray();
+
     internal static string[] SplitMetadataValues(IEnumerable<string?> values) =>
         OrderedDistinct(values.SelectMany(static value => value?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? []));
 
@@ -68,8 +76,14 @@ internal static class AuthSurfaceCanonicalizer
         return route != 0 ? route : StringComparer.Ordinal.Compare(left.Method, right.Method);
     }
 
-    internal static string CanonicalIdentity(string route, string method) =>
-        route.ToUpperInvariant() + "\u001f" + method.ToUpperInvariant();
+    internal static string CanonicalIdentity(string route, string method)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+        ArgumentNullException.ThrowIfNull(method);
+
+        RoutePattern pattern = RoutePatternFactory.Parse(route);
+        return RenderPattern(pattern, caseFoldRouteComponents: true) + "\u001f" + method.ToUpperInvariant();
+    }
 
     internal static string Fingerprint(
         AuthSurfaceAuthorizationKind authorizationKind,
@@ -80,15 +94,16 @@ internal static class AuthSurfaceCanonicalizer
         bool usesFallbackPolicy,
         IEnumerable<string> requirements)
     {
-        string canonical = string.Join(
-            "\n",
+        string canonical = EncodeSequence(
+        [
             authorizationKind.ToString(),
-            "policies=" + string.Join('|', policies),
-            "roles=" + string.Join('|', roles),
-            "schemes=" + string.Join('|', schemes),
-            "default=" + usesDefaultPolicy.ToString(CultureInfo.InvariantCulture),
-            "fallback=" + usesFallbackPolicy.ToString(CultureInfo.InvariantCulture),
-            "requirements=" + string.Join('|', requirements));
+            EncodeSequence(policies),
+            EncodeSequence(roles),
+            EncodeSequence(schemes),
+            usesDefaultPolicy.ToString(CultureInfo.InvariantCulture),
+            usesFallbackPolicy.ToString(CultureInfo.InvariantCulture),
+            EncodeSequence(requirements),
+        ]);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
@@ -101,16 +116,28 @@ internal static class AuthSurfaceCanonicalizer
         string identity = StableTypeIdentity(type);
         return requirement switch
         {
-            DenyAnonymousAuthorizationRequirement => identity,
-            RolesAuthorizationRequirement roles => identity + "|roles=" + string.Join('|', OrderedDistinct(roles.AllowedRoles)),
-            ClaimsAuthorizationRequirement claims => identity + "|claimType=" + claims.ClaimType + "|allowed=" + string.Join('|', OrderedDistinct(claims.AllowedValues ?? [])),
-            NameAuthorizationRequirement name => identity + "|name=" + name.RequiredName,
-            OperationAuthorizationRequirement operation => identity + "|name=" + operation.Name,
-            _ => identity + "|opaque",
+            DenyAnonymousAuthorizationRequirement => "type=" + EncodeValue(identity),
+            RolesAuthorizationRequirement roles => "type=" + EncodeValue(identity) + ";kind=roles;allowed=" + EncodeSequence(OrderedDistinctExact(roles.AllowedRoles)),
+            ClaimsAuthorizationRequirement claims => "type=" + EncodeValue(identity) + ";kind=claims;claimType=" + EncodeValue(claims.ClaimType) + ";allowed=" + EncodeSequence(OrderedDistinctExact(claims.AllowedValues ?? [])),
+            NameAuthorizationRequirement name => "type=" + EncodeValue(identity) + ";kind=name;required=" + EncodeValue(name.RequiredName),
+            OperationAuthorizationRequirement operation => "type=" + EncodeValue(identity) + ";kind=operation;name=" + EncodeValue(operation.Name),
+            _ => "type=" + EncodeValue(identity) + "|opaque",
         };
     }
 
-    private static string RenderPattern(RoutePattern pattern)
+    private static string EncodeValue(string? value) =>
+        value is null
+            ? "-1:"
+            : value.Length.ToString(CultureInfo.InvariantCulture) + ":" + value;
+
+    private static string EncodeSequence(IEnumerable<string?> values)
+    {
+        string?[] valuesArray = values.ToArray();
+        return valuesArray.Length.ToString(CultureInfo.InvariantCulture) + "[" +
+            string.Concat(valuesArray.Select(EncodeValue)) + "]";
+    }
+
+    private static string RenderPattern(RoutePattern pattern, bool caseFoldRouteComponents = false)
     {
         var builder = new StringBuilder();
         foreach (RoutePatternPathSegment segment in pattern.PathSegments)
@@ -121,7 +148,7 @@ internal static class AuthSurfaceCanonicalizer
                 switch (part)
                 {
                     case RoutePatternLiteralPart literal:
-                        builder.Append(literal.Content);
+                        builder.Append(caseFoldRouteComponents ? literal.Content.ToUpperInvariant() : literal.Content);
                         break;
                     case RoutePatternSeparatorPart separator:
                         builder.Append(separator.Content);
@@ -130,10 +157,10 @@ internal static class AuthSurfaceCanonicalizer
                         builder.Append('{');
                         if (parameter.IsCatchAll)
                         {
-                            builder.Append(parameter.EncodeSlashes ? "**" : '*');
+                            builder.Append(parameter.EncodeSlashes ? '*' : "**");
                         }
 
-                        builder.Append(parameter.Name);
+                        builder.Append(caseFoldRouteComponents ? parameter.Name.ToUpperInvariant() : parameter.Name);
                         foreach (RoutePatternParameterPolicyReference policy in parameter.ParameterPolicies)
                         {
                             builder.Append(':').Append(policy.Content);

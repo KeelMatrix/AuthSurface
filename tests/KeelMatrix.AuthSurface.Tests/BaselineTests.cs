@@ -31,7 +31,7 @@ public sealed class BaselineTests
         AuthSurfaceVerificationResult result = AuthSurfaceVerifier.Compare(changed, first);
 
         Assert.False(result.IsValid);
-        Assert.Contains(result.Violations, violation => violation.Code == "endpoint-changed");
+        Assert.Contains(result.Violations, violation => violation.Code == "endpoint-classification-changed");
         Assert.Equal(before, File.ReadAllBytes(first));
     }
 

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit;
@@ -61,6 +62,50 @@ public sealed class IdentityContractTests
         Assert.Contains(report.Endpoints, endpoint => endpoint.Route == "/beta");
     }
 
+    [Fact]
+    public async Task ConstraintArgumentsRemainDistinctInCanonicalIdentity()
+    {
+        await using WebApplication app = BuildApplication(application =>
+        {
+            application.MapGet("/items/{id:regex(^\\d+$)}", () => Results.Ok()).AllowAnonymous();
+            application.MapGet("/items/{id:regex(^\\D+$)}", () => Results.Ok()).AllowAnonymous();
+        });
+        await app.StartAsync();
+
+        AuthSurfaceReport report = await new AuthSurfaceScanner(app.Services).ScanAsync();
+
+        Assert.Equal(2, report.Endpoints.Count(endpoint => endpoint.Route.StartsWith("/items/", StringComparison.Ordinal)));
+        Assert.Empty(report.PolicyViolations);
+    }
+
+    [Fact]
+    public async Task ProgrammaticPatternWithoutRawTextUsesCorrectCatchAllRendering()
+    {
+        RoutePattern pattern = RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("files")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "path",
+                        null!,
+                        RoutePatternParameterKind.CatchAll),
+                ]),
+            ]);
+        RouteEndpointBuilder builder = new(_ => Task.CompletedTask, pattern, order: 0);
+        builder.Metadata.Add(new HttpMethodMetadata(["GET"]));
+        builder.Metadata.Add(new AllowAnonymousAttribute());
+        var source = new DefaultEndpointDataSource([(RouteEndpoint)builder.Build()]);
+
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [source],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+        Assert.Equal("/files/{*path}", endpoint.Route);
+    }
+
     private static WebApplication BuildApplication(Action<WebApplication> configureEndpoints)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -73,6 +118,20 @@ public sealed class IdentityContractTests
         app.Urls.Add("http://127.0.0.1:0");
         configureEndpoints(app);
         return app;
+    }
+
+    private sealed class AllowingPolicyProvider : IAuthorizationPolicyProvider
+    {
+        public bool AllowsCachingPolicies => false;
+
+        public Task<AuthorizationPolicy> GetDefaultPolicyAsync() =>
+            Task.FromResult(new AuthorizationPolicyBuilder().Build());
+
+        public Task<AuthorizationPolicy?> GetFallbackPolicyAsync() =>
+            Task.FromResult<AuthorizationPolicy?>(null);
+
+        public Task<AuthorizationPolicy?> GetPolicyAsync(string policyName) =>
+            Task.FromResult<AuthorizationPolicy?>(null);
     }
 }
 #pragma warning restore ASP0022

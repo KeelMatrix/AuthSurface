@@ -10,7 +10,36 @@ dotnet add package KeelMatrix.AuthSurface --version 0.1.0
 
 ## Quick Start
 
-The package README is the canonical consumer guide, including the minimal scan, the explicit baseline creation/update workflow, classifications, limitations, and privacy contract: [`src/KeelMatrix.AuthSurface/README.md`](src/KeelMatrix.AuthSurface/README.md).
+Build the host and its endpoint metadata before scanning. Create the baseline once, review and commit it, then use only the comparison path in recurring tests:
+
+```csharp
+using KeelMatrix.AuthSurface;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+builder.Services.AddAuthorization();
+WebApplication app = builder.Build();
+app.MapGet("/health", () => Results.Ok()).AllowAnonymous();
+app.MapGet("/orders", () => Results.Ok()).RequireAuthorization();
+await app.StartAsync();
+
+AuthSurfaceScanner scanner = new(
+    app.Services.GetServices<EndpointDataSource>(),
+    app.Services.GetRequiredService<IAuthorizationPolicyProvider>());
+AuthSurfaceReport report = await scanner.ScanAsync();
+report.AssertPolicyCompliant();
+
+// One-time, reviewed setup:
+AuthSurfaceBaseline.Create(report, "authsurface.json", overwrite: false);
+
+// Recurring comparison test (after authsurface.json is committed):
+AuthSurfaceVerifier.Compare(report, "authsurface.json").AssertValid();
+```
+
+The package README is the canonical consumer guide for updates, classifications, limitations, and privacy: [`src/KeelMatrix.AuthSurface/README.md`](src/KeelMatrix.AuthSurface/README.md).
 
 ## Documentation
 

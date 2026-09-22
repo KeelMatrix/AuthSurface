@@ -5,13 +5,76 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('authsurface-consumer-' + [guid]::NewGuid().ToString('N'))
 $feed = Join-Path $root 'feed'
 $project = Join-Path $root 'consumer'
+$packageVersion = '0.1.0'
+$packageId = 'KeelMatrix.AuthSurface'
+
+if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
+    throw "Package does not exist: $PackagePath"
+}
+
+$suppliedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
+$suppliedHash = (Get-FileHash -LiteralPath $suppliedPackage -Algorithm SHA512).Hash.ToLowerInvariant()
 New-Item -ItemType Directory -Path $feed, $project -Force | Out-Null
-Copy-Item -LiteralPath $PackagePath -Destination $feed
+Copy-Item -LiteralPath $suppliedPackage -Destination (Join-Path $feed "$packageId.$packageVersion.nupkg")
+
+function Invoke-IsolatedDotnet([string] $Name, [string] $CachePath, [scriptblock] $Action) {
+    $previousCache = $env:NUGET_PACKAGES
+    $env:NUGET_PACKAGES = $CachePath
+    try {
+        Write-Output "=== $Name (NUGET_PACKAGES=$CachePath) ==="
+        & $Action
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        if ($null -eq $previousCache) {
+            Remove-Item Env:NUGET_PACKAGES -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:NUGET_PACKAGES = $previousCache
+        }
+    }
+
+    if ($exitCode -ne 0) {
+        throw "$Name failed with exit code $exitCode."
+    }
+}
+
+function Assert-SuppliedPackageConsumed([string] $CachePath, [string] $ProjectPath, [string] $ExpectedHash) {
+    $packageFolder = Join-Path $CachePath ($packageId.ToLowerInvariant() + "\" + $packageVersion)
+    $cachedPackage = Join-Path $packageFolder "$($packageId.ToLowerInvariant()).$packageVersion.nupkg"
+    $cachedHashFile = "$cachedPackage.sha512"
+    if (-not (Test-Path -LiteralPath $cachedPackage) -or -not (Test-Path -LiteralPath $cachedHashFile)) {
+        throw "The isolated package cache does not contain the expected $packageId $packageVersion artifact."
+    }
+
+    $cacheHash = [Convert]::ToHexString(
+        [Convert]::FromBase64String((Get-Content -LiteralPath $cachedHashFile -Raw).Trim())).ToLowerInvariant()
+    if ($cacheHash -ne $ExpectedHash) {
+        throw "The consumer restored a different $packageId $packageVersion artifact. supplied=$ExpectedHash consumed=$cacheHash"
+    }
+
+    $assetsPath = Join-Path $ProjectPath 'obj/project.assets.json'
+    if (-not (Test-Path -LiteralPath $assetsPath)) {
+        throw "The consumer restore did not produce project.assets.json: $assetsPath"
+    }
+    $assets = Get-Content -LiteralPath $assetsPath -Raw | ConvertFrom-Json
+    $library = @($assets.libraries.PSObject.Properties | Where-Object { $_.Name -eq "$packageId/$packageVersion" }) | Select-Object -First 1
+    $suppliedHashBase64 = [Convert]::ToBase64String([Convert]::FromHexString($ExpectedHash))
+    if ($null -eq $library -or [string]$library.Value.sha512 -ne $suppliedHashBase64) {
+        $reportedHash = if ($null -eq $library) { '<missing>' } else { [string]$library.Value.sha512 }
+        throw "project.assets.json did not select the supplied $packageId $packageVersion artifact. reported=$reportedHash"
+    }
+
+    Write-Output "Verified supplied package artifact: $packageId $packageVersion SHA512=$ExpectedHash"
+}
 
 try {
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'global.json') -Destination (Join-Path $root 'global.json')
+
     @'
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
@@ -20,6 +83,14 @@ try {
     <add key="local" value="./feed" />
     <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
   </packageSources>
+  <packageSourceMapping>
+    <packageSource key="local">
+      <package pattern="KeelMatrix.AuthSurface" />
+    </packageSource>
+    <packageSource key="nuget.org">
+      <package pattern="*" />
+    </packageSource>
+  </packageSourceMapping>
 </configuration>
 '@ | Set-Content -LiteralPath (Join-Path $root 'NuGet.config') -Encoding utf8
 
@@ -30,8 +101,6 @@ try {
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
-  <ItemGroup>
-  </ItemGroup>
 </Project>
 '@ | Set-Content -LiteralPath (Join-Path $project 'Consumer.csproj') -Encoding utf8
 
@@ -101,7 +170,7 @@ try
         throw new InvalidOperationException("consumer smoke did not report the added endpoint");
     }
 
-    Console.WriteLine("consumer smoke passed: documented package install, runtime scan, explicit baseline creation, matching comparison, unprotected-policy failure, and structured endpoint-added failure");
+    Console.WriteLine("consumer smoke passed: documented PackageReference install, runtime scan, explicit baseline creation, matching comparison, unprotected-policy failure, and structured endpoint-added failure");
 }
 finally
 {
@@ -110,22 +179,29 @@ finally
 }
 '@ | Set-Content -LiteralPath (Join-Path $project 'Program.cs') -Encoding utf8
 
-    $env:KEELMATRIX_NO_TELEMETRY = '1'
-    $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
-    $env:DO_NOT_TRACK = '1'
-    Push-Location $project
-    try {
-        & dotnet add package KeelMatrix.AuthSurface --version 0.1.0
-        if ($LASTEXITCODE -ne 0) { throw "documented package install failed with exit code $LASTEXITCODE" }
-    }
-    finally {
-        Pop-Location
+    $configPath = Join-Path $root 'NuGet.config'
+    $feedPath = (Resolve-Path -LiteralPath $feed).Path
+    $installCache = Join-Path $root 'packages-install'
+    $restoreCache = Join-Path $root 'packages-restore'
+    $runCache = Join-Path $root 'packages-run'
+    New-Item -ItemType Directory -Path $installCache, $restoreCache, $runCache -Force | Out-Null
+
+    Invoke-IsolatedDotnet 'PackageReference install' $installCache {
+        dotnet add (Join-Path $project 'Consumer.csproj') package $packageId --version $packageVersion --source $feedPath --no-restore
     }
 
-    & dotnet restore (Join-Path $project 'Consumer.csproj') --configfile (Join-Path $root 'NuGet.config') --force-evaluate --no-cache
-    if ($LASTEXITCODE -ne 0) { throw "consumer restore failed with exit code $LASTEXITCODE" }
-    & dotnet run --project (Join-Path $project 'Consumer.csproj') -c Release --no-restore
-    if ($LASTEXITCODE -ne 0) { throw "consumer run failed with exit code $LASTEXITCODE" }
+    Invoke-IsolatedDotnet 'consumer restore' $restoreCache {
+        dotnet restore (Join-Path $project 'Consumer.csproj') --configfile $configPath --force-evaluate --no-cache
+    }
+    Assert-SuppliedPackageConsumed $restoreCache $project $suppliedHash
+
+    Invoke-IsolatedDotnet 'consumer run restore' $runCache {
+        dotnet restore (Join-Path $project 'Consumer.csproj') --configfile $configPath --force-evaluate --no-cache
+    }
+    Assert-SuppliedPackageConsumed $runCache $project $suppliedHash
+    Invoke-IsolatedDotnet 'consumer run' $runCache {
+        dotnet run --project (Join-Path $project 'Consumer.csproj') -c Release --no-restore
+    }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
