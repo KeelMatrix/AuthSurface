@@ -53,7 +53,8 @@ public sealed class AuthSurfaceEndpoint
     /// <summary>Gets a value indicating whether the fallback policy contributed.</summary>
     public bool UsesFallbackPolicy { get; }
 
-    /// <summary>Gets canonical supported requirement descriptions.</summary>
+    /// <summary>Gets canonical supported requirement descriptions in framework combination order.</summary>
+    /// <remarks>Requirement order and framework-preserved duplicate entries are identity-significant.</remarks>
     public IReadOnlyList<string> Requirements { get; }
 
     /// <summary>Gets the SHA-256 fingerprint of the effective authorization requirements.</summary>

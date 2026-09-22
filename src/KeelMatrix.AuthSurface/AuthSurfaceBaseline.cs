@@ -550,6 +550,8 @@ public sealed class AuthSurfaceBaseline
             throw new AuthSurfaceBaselineException("baseline-malformed", "A baseline endpoint has an invalid requirement fingerprint.");
         }
 
+        // The serialized requirement array is already the framework-produced sequence. Read it
+        // verbatim so baseline comparison observes order and framework-preserved duplicates.
         return new AuthSurfaceEndpoint(
             AuthSurfaceCanonicalizer.NormalizeRoute(Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.Parse(document.Route)),
             document.Methods[0],
@@ -559,7 +561,7 @@ public sealed class AuthSurfaceBaseline
             AuthSurfaceCanonicalizer.OrderedDistinctExact(document.Schemes),
             document.UsesDefaultPolicy,
             document.UsesFallbackPolicy,
-            document.Requirements.OrderBy(static value => value, StringComparer.Ordinal),
+            document.Requirements,
             document.RequirementFingerprint.ToLowerInvariant());
     }
 

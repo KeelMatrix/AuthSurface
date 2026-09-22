@@ -64,9 +64,10 @@ internal static class AuthSurfaceCanonicalizer
             return [];
         }
 
+        // AuthorizationPolicy.Requirements is the framework's combined sequence. Preserve its
+        // order and duplicate entries because both are part of the effective policy identity.
         return policy.Requirements
             .Select(CanonicalizeRequirement)
-            .OrderBy(static value => value, StringComparer.Ordinal)
             .ToArray();
     }
 

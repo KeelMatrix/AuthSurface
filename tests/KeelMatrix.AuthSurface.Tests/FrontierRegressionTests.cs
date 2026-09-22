@@ -75,6 +75,126 @@ public sealed class FrontierRegressionTests
     }
 
     [Fact]
+    public async Task ReversingDirectPolicyRequirementsChangesCanonicalTextFingerprintAndComparison()
+    {
+        await using WebApplication baselineApp = BuildApplication(application =>
+        {
+            application.MapGet("/ordered-direct", () => Results.Ok()).WithMetadata(
+                new AuthorizationPolicyBuilder()
+                    .RequireClaim("scope", "first")
+                    .RequireClaim("scope", "second")
+                    .Build());
+        });
+        await baselineApp.StartAsync();
+        AuthSurfaceReport baselineReport = await new AuthSurfaceScanner(baselineApp.Services).ScanAsync();
+        AuthSurfaceEndpoint baselineEndpoint = Assert.Single(
+            baselineReport.Endpoints.Where(item => item.Route == "/ordered-direct"));
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Create(baselineReport);
+
+        await using WebApplication changedApp = BuildApplication(application =>
+        {
+            application.MapGet("/ordered-direct", () => Results.Ok()).WithMetadata(
+                new AuthorizationPolicyBuilder()
+                    .RequireClaim("scope", "second")
+                    .RequireClaim("scope", "first")
+                    .Build());
+        });
+        await changedApp.StartAsync();
+        AuthSurfaceEndpoint changedEndpoint = Assert.Single(
+            (await new AuthSurfaceScanner(changedApp.Services).ScanAsync()).Endpoints.Where(item => item.Route == "/ordered-direct"));
+
+        Assert.False(baselineEndpoint.Requirements.SequenceEqual(changedEndpoint.Requirements, StringComparer.Ordinal));
+        Assert.NotEqual(baselineEndpoint.RequirementFingerprint, changedEndpoint.RequirementFingerprint);
+
+        AuthSurfaceVerificationResult result = AuthSurfaceVerifier.Compare(
+            await new AuthSurfaceScanner(changedApp.Services).ScanAsync(),
+            baseline);
+
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-requirement-changed");
+    }
+
+    [Fact]
+    public async Task ReversingRequirementDataRequirementsChangesCanonicalTextFingerprintAndComparison()
+    {
+        await using WebApplication baselineApp = BuildApplication(application =>
+        {
+            application.MapGet("/ordered-data", () => Results.Ok()).WithMetadata(
+                new ClaimRequirementData("first"),
+                new ClaimRequirementData("second"));
+        });
+        await baselineApp.StartAsync();
+        AuthSurfaceReport baselineReport = await new AuthSurfaceScanner(baselineApp.Services).ScanAsync();
+        AuthSurfaceEndpoint baselineEndpoint = Assert.Single(
+            baselineReport.Endpoints.Where(item => item.Route == "/ordered-data"));
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Create(baselineReport);
+        int firstIndex = Array.FindIndex(baselineEndpoint.Requirements.ToArray(), item => item.Contains("5:first", StringComparison.Ordinal));
+        int secondIndex = Array.FindIndex(baselineEndpoint.Requirements.ToArray(), item => item.Contains("6:second", StringComparison.Ordinal));
+        Assert.True(firstIndex >= 0);
+        Assert.True(secondIndex > firstIndex);
+
+        await using WebApplication changedApp = BuildApplication(application =>
+        {
+            application.MapGet("/ordered-data", () => Results.Ok()).WithMetadata(
+                new ClaimRequirementData("second"),
+                new ClaimRequirementData("first"));
+        });
+        await changedApp.StartAsync();
+        AuthSurfaceReport changedReport = await new AuthSurfaceScanner(changedApp.Services).ScanAsync();
+        AuthSurfaceEndpoint changedEndpoint = Assert.Single(
+            changedReport.Endpoints.Where(item => item.Route == "/ordered-data"));
+
+        Assert.False(baselineEndpoint.Requirements.SequenceEqual(changedEndpoint.Requirements, StringComparer.Ordinal));
+        Assert.NotEqual(baselineEndpoint.RequirementFingerprint, changedEndpoint.RequirementFingerprint);
+
+        AuthSurfaceVerificationResult result = AuthSurfaceVerifier.Compare(changedReport, baseline);
+
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-requirement-changed");
+
+        string path = Path.Combine(Path.GetTempPath(), "authsurface-order-tests", Guid.NewGuid().ToString("N"), "authsurface.json");
+        try
+        {
+            baseline.Write(path, overwrite: false);
+            AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+
+            Assert.Equal(baselineEndpoint.Requirements, roundTrip.Endpoints.Single().Requirements);
+            Assert.True(AuthSurfaceVerifier.Compare(baselineReport, roundTrip).IsValid);
+        }
+        finally
+        {
+            string? directory = Path.GetDirectoryName(path);
+            if (directory is not null && Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task MixedSourcesPreserveFrameworkCombinationOrderAndDuplicateRequirements()
+    {
+        await using WebApplication app = BuildApplication(application =>
+        {
+            application.MapGet("/ordered-mixed", () => Results.Ok()).WithMetadata(
+                new AuthorizeAttribute { Roles = "attribute" },
+                new AuthorizationPolicyBuilder().RequireClaim("scope", "direct").Build(),
+                new ClaimRequirementData("data"),
+                new ClaimRequirementData("data"));
+        });
+        await app.StartAsync();
+
+        AuthSurfaceEndpoint endpoint = Assert.Single(
+            (await new AuthSurfaceScanner(app.Services).ScanAsync()).Endpoints.Where(item => item.Route == "/ordered-mixed"));
+        int attributeIndex = Array.FindIndex(endpoint.Requirements.ToArray(), item => item.Contains("kind=roles", StringComparison.Ordinal));
+        int directIndex = Array.FindIndex(endpoint.Requirements.ToArray(), item => item.Contains("6:direct", StringComparison.Ordinal));
+        int firstDataIndex = Array.FindIndex(endpoint.Requirements.ToArray(), item => item.Contains("4:data", StringComparison.Ordinal));
+
+        Assert.True(attributeIndex >= 0);
+        Assert.True(directIndex > attributeIndex);
+        Assert.True(firstDataIndex > directIndex);
+        Assert.Equal(2, endpoint.Requirements.Count(item => item.Contains("4:data", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public async Task RolesOnlyAuthorizationDoesNotClaimDefaultPolicyContribution()
     {
         await using WebApplication app = BuildApplication(application =>
