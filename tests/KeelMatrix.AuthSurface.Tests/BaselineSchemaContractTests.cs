@@ -186,7 +186,9 @@ public sealed class BaselineSchemaContractTests
     {
         using TemporaryDirectory directory = new();
         string path = Path.Combine(directory.Path, "authsurface.json");
-        string json = CreateBaselineJson(requirement: @"intentional\uFEFF-content");
+        string json = CreateBaselineJson(
+            requirement: @"intentional\uFEFF-content",
+            fingerprintRequirement: "intentional\uFEFF-content");
         File.WriteAllText(path, json, new UTF8Encoding(false));
 
         AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Read(path);
@@ -214,7 +216,7 @@ public sealed class BaselineSchemaContractTests
     {
         using TemporaryDirectory directory = new();
         string path = Path.Combine(directory.Path, "authsurface.json");
-        const string fingerprint = "0000000000000000000000000000000000000000000000000000000000000000";
+        string fingerprint = AuthSurfaceCanonicalizer.Fingerprint(["requirement"]);
         string json = "{\"schemaVersion\":1,\"endpoints\":[" +
             "{\"route\":\"/first\",\"methods\":[\"GET\"],\"authorization\":\"ExplicitProtected\",\"policies\":[],\"roles\":[],\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false,\"requirements\":[\"requirement\"],\"requirementFingerprint\":\"" + fingerprint + "\"}," +
             "{\"route\":\"/second\",\"methods\":[\"GET\"],\"authorization\":\"ExplicitProtected\",\"policies\":[],\"roles\":[],\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false,\"requirements\":[\"requirement\"],\"requirementFingerprint\":\"" + fingerprint + "\"}]}";
@@ -245,14 +247,7 @@ public sealed class BaselineSchemaContractTests
             usesDefaultPolicy: false,
             usesFallbackPolicy: false,
             requirements,
-            AuthSurfaceCanonicalizer.Fingerprint(
-                AuthSurfaceAuthorizationKind.ExplicitProtected,
-                [],
-                [],
-                [],
-                usesDefaultPolicy: false,
-                usesFallbackPolicy: false,
-                requirements));
+            AuthSurfaceCanonicalizer.Fingerprint(requirements));
         AuthSurfaceBaseline original = AuthSurfaceBaseline.Create(new AuthSurfaceReport([endpoint], []));
         original.Write(path, overwrite: false);
 
@@ -276,6 +271,19 @@ public sealed class BaselineSchemaContractTests
             () => AuthSurfaceBaseline.Read(path, maximumBytes: 8));
 
         Assert.Equal("baseline-too-large", exception.Code);
+    }
+
+    [Fact]
+    public void RequirementFingerprintMustMatchOrderedRequirements()
+    {
+        AssertRejected(
+            "{\"schemaVersion\":1,\"endpoints\":[{" +
+            "\"route\":\"/orders\",\"methods\":[\"GET\"]," +
+            "\"authorization\":\"ExplicitProtected\",\"policies\":[],\"roles\":[]," +
+            "\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false," +
+            "\"requirements\":[\"requirement\"],\"requirementFingerprint\":\"" +
+            new string('0', 64) + "\"}]}",
+            "baseline-malformed");
     }
 
     [Fact]
@@ -412,13 +420,16 @@ public sealed class BaselineSchemaContractTests
         return Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(text)).ToArray();
     }
 
-    private static string CreateBaselineJson(string route = "/orders", string requirement = "requirement") =>
+    private static string CreateBaselineJson(
+        string route = "/orders",
+        string requirement = "requirement",
+        string? fingerprintRequirement = null) =>
         "{\"schemaVersion\":1,\"endpoints\":[{" +
         "\"route\":\"" + route + "\",\"methods\":[\"GET\"]," +
         "\"authorization\":\"ExplicitProtected\",\"policies\":[],\"roles\":[]," +
         "\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false," +
         "\"requirements\":[\"" + requirement + "\"],\"requirementFingerprint\":\"" +
-        new string('0', 64) + "\"}]}";
+        AuthSurfaceCanonicalizer.Fingerprint([fingerprintRequirement ?? requirement]) + "\"}]}";
 
     private static void AssertDuplicateFieldRejected(string json, string field, string location)
     {

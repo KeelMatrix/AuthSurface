@@ -41,6 +41,10 @@ AuthSurfaceVerifier.Compare(report, "authsurface.json").AssertValid();
 
 The package README is the canonical consumer guide for updates, classifications, limitations, and privacy: [`src/KeelMatrix.AuthSurface/README.md`](src/KeelMatrix.AuthSurface/README.md).
 
+## Requirement fingerprint
+
+`AuthSurfaceEndpoint.RequirementFingerprint` is the SHA-256 fingerprint of only the ordered canonical `Requirements` sequence. Requirement order and framework-preserved duplicates are identity-significant. Classification, named policies, roles, authentication schemes, and default/fallback provenance have their own fields and comparison codes; changing only one of those values does not emit `endpoint-requirement-changed`.
+
 ## Diagnostic codes
 
 The following table is the complete stable code set emitted by the shipping assembly through structured violations and analysis or baseline exceptions. Message text may add context; automation should use the code.

@@ -95,25 +95,9 @@ internal static class AuthSurfaceCanonicalizer
         return RenderPattern(pattern, caseFoldRouteComponents: true) + "\u001f" + method.ToUpperInvariant();
     }
 
-    internal static string Fingerprint(
-        AuthSurfaceAuthorizationKind authorizationKind,
-        IEnumerable<string> policies,
-        IEnumerable<string> roles,
-        IEnumerable<string> schemes,
-        bool usesDefaultPolicy,
-        bool usesFallbackPolicy,
-        IEnumerable<string> requirements)
+    internal static string Fingerprint(IEnumerable<string> requirements)
     {
-        string canonical = EncodeSequence(
-        [
-            authorizationKind.ToString(),
-            EncodeSequence(policies),
-            EncodeSequence(roles),
-            EncodeSequence(schemes),
-            usesDefaultPolicy.ToString(CultureInfo.InvariantCulture),
-            usesFallbackPolicy.ToString(CultureInfo.InvariantCulture),
-            EncodeSequence(requirements),
-        ]);
+        string canonical = EncodeSequence(requirements);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 

@@ -5,40 +5,62 @@ namespace KeelMatrix.AuthSurface.Tests;
 
 public sealed class FingerprintContractTests
 {
-    [Fact]
-    public void PolicyAddedChangesFingerprintWithoutChangingClassification()
+    [Theory]
+    [InlineData("policy", "endpoint-policy-changed")]
+    [InlineData("role", "endpoint-role-changed")]
+    [InlineData("scheme", "endpoint-scheme-changed")]
+    [InlineData("classification", "endpoint-classification-changed")]
+    [InlineData("default", "endpoint-default-policy-changed")]
+    [InlineData("fallback", "endpoint-fallback-policy-changed")]
+    public void NonRequirementMetadataChangeDoesNotReportRequirementChange(
+        string change,
+        string expectedCode)
     {
-        const AuthSurfaceAuthorizationKind beforeKind = AuthSurfaceAuthorizationKind.ExplicitProtected;
-        const AuthSurfaceAuthorizationKind afterKind = AuthSurfaceAuthorizationKind.ExplicitProtected;
-        string before = Fingerprint(beforeKind, policies: ["Read"]);
-        string after = Fingerprint(afterKind, policies: ["Read", "Write"]);
+        AuthSurfaceEndpoint before = Endpoint();
+        AuthSurfaceEndpoint after = change switch
+        {
+            "policy" => Endpoint(policies: ["Write"]),
+            "role" => Endpoint(roles: ["Writer"]),
+            "scheme" => Endpoint(schemes: ["Cookies"]),
+            "classification" => Endpoint(kind: AuthSurfaceAuthorizationKind.FallbackProtected),
+            "default" => Endpoint(usesDefaultPolicy: false),
+            "fallback" => Endpoint(usesFallbackPolicy: true),
+            _ => throw new ArgumentOutOfRangeException(nameof(change)),
+        };
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Create(new AuthSurfaceReport([before], []));
 
-        Assert.Equal(beforeKind, afterKind);
-        Assert.NotEqual(before, after);
+        AuthSurfaceVerificationResult result = AuthSurfaceVerifier.Compare(
+            new AuthSurfaceReport([after], []),
+            baseline);
+
+        Assert.Equal(before.Requirements, after.Requirements);
+        Assert.Equal(before.RequirementFingerprint, after.RequirementFingerprint);
+        Assert.Equal([expectedCode], result.Violations.Select(static violation => violation.Code));
+        Assert.DoesNotContain(result.Violations, static violation => violation.Code == "endpoint-requirement-changed");
     }
 
-    [Fact]
-    public void RoleAddedChangesFingerprintWithoutChangingClassification()
+    [Theory]
+    [InlineData("changed")]
+    [InlineData("reordered")]
+    public void RequirementSequenceChangeReportsRequirementChange(string change)
     {
-        const AuthSurfaceAuthorizationKind beforeKind = AuthSurfaceAuthorizationKind.ExplicitProtected;
-        const AuthSurfaceAuthorizationKind afterKind = AuthSurfaceAuthorizationKind.ExplicitProtected;
-        string before = Fingerprint(beforeKind, roles: ["Reader"]);
-        string after = Fingerprint(afterKind, roles: ["Reader", "Writer"]);
+        AuthSurfaceEndpoint before = Endpoint(requirements: ["permission|read", "permission|write"]);
+        AuthSurfaceEndpoint after = change switch
+        {
+            "changed" => Endpoint(requirements: ["permission|read", "permission|admin"]),
+            "reordered" => Endpoint(requirements: ["permission|write", "permission|read"]),
+            _ => throw new ArgumentOutOfRangeException(nameof(change)),
+        };
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Create(new AuthSurfaceReport([before], []));
 
-        Assert.Equal(beforeKind, afterKind);
-        Assert.NotEqual(before, after);
-    }
+        AuthSurfaceVerificationResult result = AuthSurfaceVerifier.Compare(
+            new AuthSurfaceReport([after], []),
+            baseline);
 
-    [Fact]
-    public void SchemeAddedChangesFingerprintWithoutChangingClassification()
-    {
-        const AuthSurfaceAuthorizationKind beforeKind = AuthSurfaceAuthorizationKind.ExplicitProtected;
-        const AuthSurfaceAuthorizationKind afterKind = AuthSurfaceAuthorizationKind.ExplicitProtected;
-        string before = Fingerprint(beforeKind, schemes: ["Bearer"]);
-        string after = Fingerprint(afterKind, schemes: ["Bearer", "Cookies"]);
-
-        Assert.Equal(beforeKind, afterKind);
-        Assert.NotEqual(before, after);
+        Assert.NotEqual(before.RequirementFingerprint, after.RequirementFingerprint);
+        Assert.Equal(
+            ["endpoint-requirement-changed"],
+            result.Violations.Select(static violation => violation.Code));
     }
 
     [Fact]
@@ -46,15 +68,15 @@ public sealed class FingerprintContractTests
     {
         const AuthSurfaceAuthorizationKind beforeKind = AuthSurfaceAuthorizationKind.ExplicitProtected;
         const AuthSurfaceAuthorizationKind afterKind = AuthSurfaceAuthorizationKind.ExplicitProtected;
-        string before = Fingerprint(beforeKind, requirements: ["permission|read"]);
-        string after = Fingerprint(afterKind, requirements: ["permission|write"]);
+        string before = Fingerprint(["permission|read"]);
+        string after = Fingerprint(["permission|write"]);
 
         Assert.Equal(beforeKind, afterKind);
         Assert.NotEqual(before, after);
     }
 
     [Fact]
-    public void ComparisonReportsFingerprintOnlyChange()
+    public void ComparisonIgnoresFingerprintOnlyChange()
     {
         AuthSurfaceEndpoint before = Endpoint(requirementFingerprint: new string('a', 64));
         AuthSurfaceEndpoint after = Endpoint(requirementFingerprint: new string('b', 64));
@@ -64,11 +86,8 @@ public sealed class FingerprintContractTests
             new AuthSurfaceReport([after], []),
             baseline);
 
-        Assert.False(result.IsValid);
-        AuthSurfaceViolation violation = Assert.Single(result.Violations);
-        Assert.Equal("endpoint-requirement-changed", violation.Code);
-        Assert.Contains("fingerprint=", violation.Expected, StringComparison.Ordinal);
-        Assert.Contains("fingerprint=", violation.Actual, StringComparison.Ordinal);
+        Assert.True(result.IsValid);
+        Assert.Empty(result.Violations);
     }
 
     [Fact]
@@ -86,9 +105,12 @@ public sealed class FingerprintContractTests
     }
 
     private static AuthSurfaceEndpoint Endpoint(
+        AuthSurfaceAuthorizationKind kind = AuthSurfaceAuthorizationKind.ExplicitProtected,
         string[]? policies = null,
         string[]? roles = null,
         string[]? schemes = null,
+        bool usesDefaultPolicy = true,
+        bool usesFallbackPolicy = false,
         string[]? requirements = null,
         string? requirementFingerprint = null)
     {
@@ -96,40 +118,21 @@ public sealed class FingerprintContractTests
         roles ??= [];
         schemes ??= ["Bearer"];
         requirements ??= ["permission|read"];
-        requirementFingerprint ??= AuthSurfaceCanonicalizer.Fingerprint(
-            AuthSurfaceAuthorizationKind.ExplicitProtected,
-            policies,
-            roles,
-            schemes,
-            usesDefaultPolicy: true,
-            usesFallbackPolicy: false,
-            requirements);
+        requirementFingerprint ??= AuthSurfaceCanonicalizer.Fingerprint(requirements);
 
         return new AuthSurfaceEndpoint(
             "/secure",
             "GET",
-            AuthSurfaceAuthorizationKind.ExplicitProtected,
+            kind,
             policies,
             roles,
             schemes,
-            usesDefaultPolicy: true,
-            usesFallbackPolicy: false,
+            usesDefaultPolicy,
+            usesFallbackPolicy,
             requirements,
             requirementFingerprint);
     }
 
-    private static string Fingerprint(
-        AuthSurfaceAuthorizationKind kind,
-        IEnumerable<string>? policies = null,
-        IEnumerable<string>? roles = null,
-        IEnumerable<string>? schemes = null,
-        IEnumerable<string>? requirements = null) =>
-        AuthSurfaceCanonicalizer.Fingerprint(
-            kind,
-            policies ?? [],
-            roles ?? [],
-            schemes ?? [],
-            usesDefaultPolicy: true,
-            usesFallbackPolicy: false,
-            requirements ?? []);
+    private static string Fingerprint(IEnumerable<string> requirements) =>
+        AuthSurfaceCanonicalizer.Fingerprint(requirements);
 }

@@ -221,14 +221,7 @@ public sealed class AuthSurfaceScanner
             .OrderBy(static value => value, StringComparer.Ordinal)
             .ToArray();
         string[] requirements = AuthSurfaceCanonicalizer.CanonicalizeRequirements(effectivePolicy);
-        string fingerprint = AuthSurfaceCanonicalizer.Fingerprint(
-            kind,
-            policies,
-            roles,
-            schemes,
-            usesDefault,
-            usesFallback,
-            requirements);
+        string fingerprint = AuthSurfaceCanonicalizer.Fingerprint(requirements);
 
         return new EndpointAuthorizationFacts(
             kind,

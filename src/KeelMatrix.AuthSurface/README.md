@@ -46,7 +46,7 @@ The complete public surface is summarized in the repository's [API reference](ht
 
 ## What the scan records
 
-AuthSurface emits one deterministic record for each normalized route and HTTP method contract. An endpoint accepting `GET` and `POST` produces one record per method. Each record contains the route pattern, method, one of the four classifications, named policies, roles, authentication schemes, default/fallback contribution flags, canonical supported requirements, and a stable requirement fingerprint.
+AuthSurface emits one deterministic record for each normalized route and HTTP method contract. An endpoint accepting `GET` and `POST` produces one record per method. Each record contains the route pattern, method, one of the four classifications, named policies, roles, authentication schemes, default/fallback contribution flags, canonical supported requirements, and a stable SHA-256 fingerprint of only the ordered canonical requirements sequence.
 
 The four classifications are:
 
@@ -59,7 +59,7 @@ The four classifications are:
 
 ## Baselines, identity, and diagnostics
 
-`authsurface.json` is bounded, UTF-8, schema-versioned JSON with deterministic endpoint ordering and `\n` newlines. Requirement arrays retain framework combination order, including framework-preserved duplicates, and requirement order is identity-significant: a policy change that only reverses requirements changes the canonical text, fingerprint, and baseline comparison result. Schema version 1 accepts one leading UTF-8 BOM when the document is otherwise valid; a raw BOM inside the document is invalid, while an escaped `\uFEFF` sequence inside a JSON string is treated as ordinary string content. The writer always emits BOM-free UTF-8. Schema version remains 1 because the existing requirement-array representation already carries sequence order; this is a pre-release contract clarification. Version 1 baselines written by earlier builds may need regeneration if their requirement arrays contain the former sorted order, while the reader preserves the order stored in the file. It rejects schema errors with structured `AuthSurfaceBaselineException` diagnostics and never silently rewrites a file. Duplicate and unknown property names are rendered in diagnostics at no more than 128 characters; longer names end with `…(truncated)` to keep diagnostic text bounded.
+`authsurface.json` is bounded, UTF-8, schema-versioned JSON with deterministic endpoint ordering and `\n` newlines. Requirement arrays retain framework combination order, including framework-preserved duplicates, and requirement order is identity-significant: reversing requirements changes the canonical text, requirement-only fingerprint, and baseline comparison result. Classification, named policies, roles, authentication schemes, and default/fallback provenance are excluded from `requirementFingerprint` and use their dedicated comparison codes. Schema version 1 accepts one leading UTF-8 BOM when the document is otherwise valid; a raw BOM inside the document is invalid, while an escaped `\uFEFF` sequence inside a JSON string is treated as ordinary string content. The writer always emits BOM-free UTF-8. Schema version remains 1 because the existing requirement-array representation already carries sequence order and the fingerprint remains a 64-character SHA-256 value; this is a pre-release contract clarification. Version 1 baselines written by earlier builds may need regeneration when their requirement arrays contain the former sorted order or their fingerprints include non-requirement authorization metadata. The reader preserves the stored requirement order and rejects a fingerprint that does not match that sequence. It rejects schema errors with structured `AuthSurfaceBaselineException` diagnostics and never silently rewrites a file. Duplicate and unknown property names are rendered in diagnostics at no more than 128 characters; longer names end with `…(truncated)` to keep diagnostic text bounded.
 
 ## Troubleshooting
 
@@ -72,7 +72,7 @@ This table is the complete stable code set emitted by the shipping assembly. `Au
 | `baseline-duplicate-identity` | Two endpoint records normalize to the same route and HTTP method identity. | Remove the duplicate record or correct its route/method before regenerating the baseline. |
 | `baseline-endpoint-limit` | The baseline endpoint list is missing or exceeds the supported 100,000-record bound. | Reduce the baseline to the intended endpoint set and regenerate it from a bounded scan. |
 | `baseline-field-type` | A known property has the wrong JSON type, such as a string where an array or boolean is required. | Change the value to the type required by schema version 1. |
-| `baseline-malformed` | The file is empty, whitespace-only, has a syntax error, contains an invalid BOM placement, or is otherwise not valid JSON for schema version 1. | Fix the JSON syntax or regenerate the baseline; a malformed file is never rewritten. |
+| `baseline-malformed` | The file is empty, whitespace-only, has a syntax error, contains an invalid BOM placement or mismatched requirement fingerprint, or is otherwise not valid JSON for schema version 1. | Fix the JSON syntax or regenerate the baseline; a malformed file is never rewritten. |
 | `baseline-read-failed` | The baseline could not be opened or read because of an I/O or access failure. | Check that the path exists and that the process has permission to read the file, then retry. |
 | `baseline-schema-unsupported` | The file declares a schema version other than the supported version 1. | Migrate the file explicitly to schema version 1; AuthSurface does not downgrade it automatically. |
 | `baseline-too-deep` | A complete JSON document exceeds the supported nesting depth. This is distinct from `baseline-truncated`, which means the document ends before its structure is complete. | Remove unexpected nesting and regenerate the baseline if the content is intentional. |
@@ -87,7 +87,7 @@ This table is the complete stable code set emitted by the shipping assembly. `Au
 | `endpoint-fallback-policy-changed` | The fallback-policy contribution flag changed. | Review the application fallback policy and the endpoint's explicit metadata. |
 | `endpoint-policy-changed` | The exact named-policy sequence changed. | Review the named policies and dynamic policy-provider result. |
 | `endpoint-removed` | A baseline endpoint has no matching current endpoint. | Confirm the route was intentionally removed, then update the baseline. |
-| `endpoint-requirement-changed` | Canonical effective requirements or their fingerprint changed. | Review the effective authorization-policy requirements before accepting the new baseline. |
+| `endpoint-requirement-changed` | The ordered canonical effective requirements changed. | Review the effective authorization-policy requirements before accepting the new baseline. |
 | `endpoint-role-changed` | The canonical role set changed. | Review role metadata and policy requirements before accepting the change. |
 | `endpoint-route-changed` | The readable normalized route changed for the same canonical identity. | Review the route spelling/casing and update the baseline only when intentional. |
 | `endpoint-scheme-changed` | The canonical authentication-scheme set changed. | Review endpoint and policy scheme metadata before accepting the change. |
@@ -99,7 +99,7 @@ This table is the complete stable code set emitted by the shipping assembly. `Au
 
 For baseline diagnostics, inspect the `Code` and message on `AuthSurfaceBaselineException`; the original file remains byte-for-byte unchanged on failure. Analysis failures use `AuthSurfaceAnalysisException`, while policy and comparison findings use `AuthSurfaceViolation`.
 
-An endpoint entry requires `route`, exactly one `methods` value, one of the four exact authorization names, `policies`, `roles`, `schemes`, `requirements`, and a 64-character hexadecimal `requirementFingerprint`. `usesDefaultPolicy` and `usesFallbackPolicy` are supported boolean fields and default to `false` when omitted. Schema version 1 is strict about unknown fields and classification names; future schema versions require an explicit migration rather than silent reinterpretation. Under SemVer, a future incompatible baseline representation requires a new schema version and documented migration behavior.
+An endpoint entry requires `route`, exactly one `methods` value, one of the four exact authorization names, `policies`, `roles`, `schemes`, `requirements`, and a 64-character hexadecimal `requirementFingerprint` equal to the SHA-256 fingerprint of only that ordered requirements sequence. `usesDefaultPolicy` and `usesFallbackPolicy` are supported boolean fields and default to `false` when omitted. Schema version 1 is strict about unknown fields, classification names, and fingerprint consistency; future schema versions require an explicit migration rather than silent reinterpretation. Under SemVer, a future incompatible baseline representation requires a new schema version and documented migration behavior.
 
 If the scan finds no endpoints, verify that the host was started and that endpoint data sources were resolved after route mapping; do not create an empty baseline until that is intentional. A `policy-resolution-failed` result means the application's real policy provider could not resolve a named policy, so register the provider and scan the completed host again. A `duplicate-endpoint-identity` result means two runtime endpoints normalize to one route/method identity; disambiguate or explicitly exclude the infrastructure endpoint before creating a baseline.
 
@@ -109,7 +109,7 @@ Baseline comparison reports structured additions, removals, changes, and policy 
 
 ## What AuthSurface proves
 
-AuthSurface proves that completed runtime endpoint data sources contain the discovered route/method contracts and that the framework's effective policy metadata resolves to the recorded classification and supported requirement fingerprint. It can detect endpoint additions, removals, and authorization metadata changes against a reviewed local baseline.
+AuthSurface proves that completed runtime endpoint data sources contain the discovered route/method contracts and that the framework's effective policy metadata resolves to the recorded classification and ordered canonical requirements. The requirement fingerprint is derived only from that sequence. It can detect endpoint additions, removals, and authorization metadata changes against a reviewed local baseline.
 
 ## Reading structured diffs
 

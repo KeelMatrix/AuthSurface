@@ -584,6 +584,14 @@ public sealed class AuthSurfaceBaseline
                 "A baseline endpoint has an invalid requirement fingerprint.");
         }
 
+        string calculatedFingerprint = AuthSurfaceCanonicalizer.Fingerprint(document.Requirements);
+        if (!string.Equals(document.RequirementFingerprint, calculatedFingerprint, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "A baseline endpoint requirement fingerprint does not match its ordered requirements.");
+        }
+
         // The serialized requirement array is already the framework-produced sequence. Read it
         // verbatim so baseline comparison observes order and framework-preserved duplicates.
         return new AuthSurfaceEndpoint(
@@ -596,7 +604,7 @@ public sealed class AuthSurfaceBaseline
             document.UsesDefaultPolicy,
             document.UsesFallbackPolicy,
             document.Requirements,
-            document.RequirementFingerprint.ToLowerInvariant());
+            calculatedFingerprint);
     }
 
     private sealed class BaselineDocument

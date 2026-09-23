@@ -92,7 +92,6 @@ public static class AuthSurfaceVerifier
         expected.AuthorizationKind == actual.AuthorizationKind &&
         expected.UsesDefaultPolicy == actual.UsesDefaultPolicy &&
         expected.UsesFallbackPolicy == actual.UsesFallbackPolicy &&
-        expected.RequirementFingerprint == actual.RequirementFingerprint &&
         expected.Policies.SequenceEqual(actual.Policies, StringComparer.Ordinal) &&
         expected.Roles.SequenceEqual(actual.Roles, StringComparer.Ordinal) &&
         expected.AuthenticationSchemes.SequenceEqual(actual.AuthenticationSchemes, StringComparer.Ordinal) &&
@@ -177,8 +176,7 @@ public static class AuthSurfaceVerifier
                 actual.UsesFallbackPolicy.ToString().ToLowerInvariant());
         }
 
-        if (expected.RequirementFingerprint != actual.RequirementFingerprint ||
-            !expected.Requirements.SequenceEqual(actual.Requirements, StringComparer.Ordinal))
+        if (!expected.Requirements.SequenceEqual(actual.Requirements, StringComparer.Ordinal))
         {
             yield return Change(
                 AuthSurfaceDiagnosticCode.EndpointRequirementChanged,

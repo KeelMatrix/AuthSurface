@@ -16,7 +16,9 @@ The package intentionally exposes no test-framework adapters, handler execution 
 
 `AuthSurfaceEndpoint.Requirements` preserves the order produced by ASP.NET Core while combining `IAuthorizeData`-derived requirements, explicit `AuthorizationPolicy` requirements, and `IAuthorizationRequirementData`. Requirement order is identity-significant: reversing requirements changes the canonical text, requirement fingerprint, and baseline comparison. Framework-preserved duplicate entries are retained; AuthSurface does not sort or silently deduplicate the framework's sequence.
 
-Baseline schema version 1 remains unchanged because its requirement array already stores an ordered sequence. This is a pre-release contract clarification. A schema-version-1 baseline produced by an earlier build may need regeneration when its requirement array reflects the former sorted order; schema-version-1 readers preserve the order stored in the file.
+The ordered `Requirements` sequence is the single source of truth for requirement identity. `AuthSurfaceEndpoint.RequirementFingerprint` is the SHA-256 fingerprint of only that sequence. Classification, named policies, roles, authentication schemes, and default/fallback provenance do not contribute to the fingerprint and are compared through their dedicated fields and diagnostic codes. `endpoint-requirement-changed` is emitted only when the ordered canonical requirements change.
+
+Baseline schema version 1 remains unchanged because its requirement array already stores an ordered sequence and its fingerprint field remains a 64-character SHA-256 value. This is a pre-release contract clarification. A schema-version-1 baseline produced by an earlier build may need regeneration when its requirement array reflects the former sorted order or its fingerprint includes non-requirement authorization metadata. Schema-version-1 readers preserve the stored order and reject a fingerprint that does not match the sequence.
 
 ## Diagnostic code contract
 

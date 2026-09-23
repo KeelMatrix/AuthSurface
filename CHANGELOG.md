@@ -10,7 +10,7 @@ All notable changes to this package will be documented here.
 
 - Runtime ASP.NET Core endpoint discovery from completed `EndpointDataSource` metadata.
 - Four-state authorization classification for explicit anonymous, explicit protected, fallback protected, and unprotected endpoints.
-- Real authorization-policy-provider resolution, supported framework requirement fingerprints, opaque custom requirement identities, deterministic route/method identity, and explicit baseline creation/comparison.
+- Real authorization-policy-provider resolution, SHA-256 fingerprints derived only from ordered canonical requirements, opaque custom requirement identities, deterministic route/method identity, and explicit baseline creation/comparison.
 - Bounded schema-versioned `authsurface.json` read/write validation with actionable structured diagnostics and one synchronized stable code inventory covering baseline, scan-policy, analysis, and comparison results.
 - Bounded activation telemetry after real scan plus policy/baseline evaluation, with opt-out through `KEELMATRIX_NO_TELEMETRY=1`; telemetry is best-effort and cannot affect results.
 - `net8.0` NuGet packaging, package-content inspection, cross-platform validation, and an isolated `PackageReference` consumer smoke path.

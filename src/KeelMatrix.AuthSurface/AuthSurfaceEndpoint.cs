@@ -57,7 +57,7 @@ public sealed class AuthSurfaceEndpoint
     /// <remarks>Requirement order and framework-preserved duplicate entries are identity-significant.</remarks>
     public IReadOnlyList<string> Requirements { get; }
 
-    /// <summary>Gets the SHA-256 fingerprint of the effective authorization requirements.</summary>
+    /// <summary>Gets the SHA-256 fingerprint of only the ordered canonical <see cref="Requirements"/> sequence.</summary>
     public string RequirementFingerprint { get; }
 
     internal string Method => Methods[0];

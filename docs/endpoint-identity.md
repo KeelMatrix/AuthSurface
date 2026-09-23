@@ -38,3 +38,7 @@ For a programmatically constructed `RoutePattern` whose parameter-policy referen
 Parsed policy text remains part of the route identity as supplied by ASP.NET Core. A content-less reference, unsupported programmatic policy type, or unsupported member inside a composite policy is not omitted: analysis fails closed with `unsupported-parameter-policy`. Exclude the endpoint explicitly or use a parsed constraint or one of the supported programmatic types when a stable identity is required.
 
 Two runtime route endpoints whose routing-equivalent identities match are ambiguous. Scanning fails with the structured `duplicate-endpoint-identity` analysis error rather than silently selecting one endpoint. Endpoint exclusions are explicit and happen before identity validation. Routes that remain different after this rule, such as `/alpha` and `/beta`, retain separate records.
+
+## Requirement identity
+
+Requirement identity is separate from route/method identity. The ordered canonical `Requirements` sequence is its single source of truth: order and framework-preserved duplicates are significant. `RequirementFingerprint` is the SHA-256 fingerprint of only that sequence. Classification, named policies, roles, authentication schemes, and default/fallback provenance are excluded from the fingerprint and produce only their dedicated comparison diagnostics when requirements remain identical.
