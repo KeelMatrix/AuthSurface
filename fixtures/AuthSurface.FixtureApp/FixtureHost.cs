@@ -62,6 +62,7 @@ public static class FixtureHost
             options.AddPolicy("Named", policy => policy
                 .AddAuthenticationSchemes("Bearer")
                 .RequireRole("Admin"));
+            options.AddPolicy("Convention", policy => policy.RequireClaim("scope", "convention"));
         });
         services.AddSingleton<IAuthorizationPolicyProvider, FixturePolicyProvider>();
     }
@@ -71,7 +72,7 @@ public static class FixtureHost
         app.UseRouting();
         app.UseAuthentication();
         app.UseAuthorization();
-        app.MapControllers();
+        app.MapControllers().RequireAuthorization("Convention");
         app.MapGet("/explicit", () => Results.Ok()).RequireAuthorization();
         app.MapGet("/named", () => Results.Ok()).RequireAuthorization("Named");
         app.MapGet("/dynamic", () => Results.Ok()).RequireAuthorization("Dynamic");

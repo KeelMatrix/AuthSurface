@@ -18,4 +18,8 @@ public sealed class FixtureController : ControllerBase
     [HttpGet("anonymous")]
     [AllowAnonymous]
     public IActionResult Anonymous() => Ok();
+
+    /// <summary>Returns a response protected only by an endpoint-builder convention.</summary>
+    [HttpGet("convention")]
+    public IActionResult Convention() => Ok();
 }

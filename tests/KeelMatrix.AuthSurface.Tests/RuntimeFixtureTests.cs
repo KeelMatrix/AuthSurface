@@ -1,5 +1,10 @@
 using AuthSurface.FixtureApp;
 using KeelMatrix.AuthSurface;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http.Metadata;
+using Microsoft.AspNetCore.Mvc.ApiExplorer;
+using Microsoft.AspNetCore.Mvc.Controllers;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -50,6 +55,46 @@ public sealed class RuntimeFixtureTests
         Assert.Equal(
             AuthSurfaceAuthorizationKind.ExplicitAnonymous,
             Find(report, "/controller/anonymous", "GET").AuthorizationKind);
+    }
+
+    [Fact]
+    public async Task EndpointBuilderConventionIsAbsentFromApiExplorerButPresentAtRuntime()
+    {
+        await using var app = FixtureHost.BuildWebApplication(fallbackPolicy: false);
+        await app.StartAsync();
+
+        ControllerActionDescriptor action = Assert.Single(
+            app.Services.GetRequiredService<IActionDescriptorCollectionProvider>()
+                .ActionDescriptors.Items
+                .OfType<ControllerActionDescriptor>()
+                .Where(item => item.ActionName == nameof(FixtureController.Convention)));
+        Assert.DoesNotContain(
+            action.EndpointMetadata.OfType<IAuthorizeData>(),
+            item => item.Policy == "Convention");
+
+        ApiDescription apiDescription = Assert.Single(
+            app.Services.GetRequiredService<IApiDescriptionGroupCollectionProvider>()
+                .ApiDescriptionGroups.Items
+                .SelectMany(static group => group.Items)
+                .Where(item => item.ActionDescriptor == action));
+        Assert.DoesNotContain(
+            apiDescription.ActionDescriptor.EndpointMetadata.OfType<IAuthorizeData>(),
+            item => item.Policy == "Convention");
+
+        RouteEndpoint runtimeEndpoint = Assert.Single(
+            app.Services.GetServices<EndpointDataSource>()
+                .SelectMany(static source => source.Endpoints)
+                .OfType<RouteEndpoint>()
+                .Where(endpoint => AuthSurfaceCanonicalizer.NormalizeRoute(endpoint.RoutePattern) == "/controller/convention"));
+        Assert.Contains(
+            runtimeEndpoint.Metadata.GetOrderedMetadata<IAuthorizeData>(),
+            item => item.Policy == "Convention");
+
+        AuthSurfaceEndpoint scanned = Find(
+            await new AuthSurfaceScanner(app.Services).ScanAsync(),
+            "/controller/convention",
+            "GET");
+        Assert.Equal(AuthSurfaceAuthorizationKind.ExplicitProtected, scanned.AuthorizationKind);
     }
 
     [Fact]

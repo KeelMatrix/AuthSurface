@@ -15,6 +15,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{7BCFE904
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KeelMatrix.AuthSurface.Tests", "tests\KeelMatrix.AuthSurface.Tests\KeelMatrix.AuthSurface.Tests.csproj", "{C6B45DE8-589D-48F1-A037-198BF461B65B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KeelMatrix.AuthSurface.TelemetryProbe", "tests\KeelMatrix.AuthSurface.TelemetryProbe\KeelMatrix.AuthSurface.TelemetryProbe.csproj", "{A0C5D6E7-F809-4A1B-9C2D-3E4F50617283}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -36,10 +38,15 @@ Global
 		{C6B45DE8-589D-48F1-A037-198BF461B65B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C6B45DE8-589D-48F1-A037-198BF461B65B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C6B45DE8-589D-48F1-A037-198BF461B65B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A0C5D6E7-F809-4A1B-9C2D-3E4F50617283}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A0C5D6E7-F809-4A1B-9C2D-3E4F50617283}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A0C5D6E7-F809-4A1B-9C2D-3E4F50617283}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A0C5D6E7-F809-4A1B-9C2D-3E4F50617283}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{2C11F3D5-F930-4C8D-B0F0-C110A4AC123F} = {CA8328B3-829E-4A12-9B15-8AD594403E99}
 		{9EA6CBAD-7402-4B62-8342-E8E40BAAC4D0} = {4803BC6A-04D8-4A19-8790-428835F9ACEB}
 		{C6B45DE8-589D-48F1-A037-198BF461B65B} = {7BCFE904-F178-41AA-A9B7-5885E8320B5A}
+		{A0C5D6E7-F809-4A1B-9C2D-3E4F50617283} = {7BCFE904-F178-41AA-A9B7-5885E8320B5A}
 	EndGlobalSection
 EndGlobal

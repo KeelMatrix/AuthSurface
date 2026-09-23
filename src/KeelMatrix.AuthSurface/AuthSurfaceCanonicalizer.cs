@@ -54,6 +54,14 @@ internal static class AuthSurfaceCanonicalizer
             .OrderBy(static value => value, StringComparer.Ordinal)
             .ToArray();
 
+    internal static string[] OrderedDistinctNonBlankExact(IEnumerable<string?> values) =>
+        values
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static value => value, StringComparer.Ordinal)
+            .ToArray();
+
     internal static string[] SplitMetadataValues(IEnumerable<string?> values) =>
         OrderedDistinct(values.SelectMany(static value => value?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? []));
 

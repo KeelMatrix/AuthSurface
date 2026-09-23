@@ -139,18 +139,18 @@ public sealed class AuthSurfaceScanner
         IReadOnlyList<AuthorizationPolicy> explicitPolicies = endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>();
         IReadOnlyList<IAuthorizationRequirementData> requirementData =
             endpoint.Metadata.GetOrderedMetadata<IAuthorizationRequirementData>();
-        bool hasExplicitAuthorization = authorizeData.Count > 0 ||
-            explicitPolicies.Count > 0 ||
-            requirementData.Count > 0;
+        bool hasEndpointAuthorization = authorizeData.Count > 0 || explicitPolicies.Count > 0;
+        bool hasAnyAuthorizationMetadata = hasEndpointAuthorization || requirementData.Count > 0;
         bool isAnonymous = endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null;
         AuthorizationPolicy? effectivePolicy = null;
+        var policyContributions = new PolicyContributionTracker(policyProvider);
 
-        if (!isAnonymous || hasExplicitAuthorization)
+        if (!isAnonymous || hasAnyAuthorizationMetadata)
         {
             try
             {
                 effectivePolicy = await AuthorizationPolicy.CombineAsync(
-                    policyProvider,
+                    policyContributions,
                     authorizeData,
                     explicitPolicies).WaitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -180,25 +180,26 @@ public sealed class AuthSurfaceScanner
         }
 
         AuthSurfaceAuthorizationKind kind;
-        bool usesFallback = !isAnonymous && !hasExplicitAuthorization && effectivePolicy is not null;
+        bool usesDefault = !isAnonymous && policyContributions.UsedDefaultPolicy;
+        bool usesFallback = !isAnonymous && policyContributions.UsedFallbackPolicy;
         if (isAnonymous)
         {
             kind = AuthSurfaceAuthorizationKind.ExplicitAnonymous;
         }
-        else if (hasExplicitAuthorization && effectivePolicy is not null)
-        {
-            kind = AuthSurfaceAuthorizationKind.ExplicitProtected;
-        }
         else if (usesFallback)
         {
             kind = AuthSurfaceAuthorizationKind.FallbackProtected;
+        }
+        else if (hasAnyAuthorizationMetadata && effectivePolicy is not null)
+        {
+            kind = AuthSurfaceAuthorizationKind.ExplicitProtected;
         }
         else
         {
             kind = AuthSurfaceAuthorizationKind.Unprotected;
         }
 
-        string[] policies = AuthSurfaceCanonicalizer.OrderedDistinct(
+        string[] policies = AuthSurfaceCanonicalizer.OrderedDistinctNonBlankExact(
             authorizeData.Select(static data => data.Policy).Where(static value => !string.IsNullOrWhiteSpace(value))!);
         string[] rolesFromMetadata = AuthSurfaceCanonicalizer.SplitMetadataValues(
             authorizeData.Select(static data => data.Roles));
@@ -218,15 +219,12 @@ public sealed class AuthSurfaceScanner
             .OrderBy(static value => value, StringComparer.Ordinal)
             .ToArray();
         string[] requirements = AuthSurfaceCanonicalizer.CanonicalizeRequirements(effectivePolicy);
-        bool usesDefaultPolicy = !isAnonymous &&
-            explicitPolicies.Count == 0 &&
-            authorizeData.Any(IsDefaultAuthorizeData);
         string fingerprint = AuthSurfaceCanonicalizer.Fingerprint(
             kind,
             policies,
             roles,
             schemes,
-            usesDefaultPolicy,
+            usesDefault,
             usesFallback,
             requirements);
 
@@ -235,16 +233,40 @@ public sealed class AuthSurfaceScanner
             policies,
             roles,
             schemes,
-            usesDefaultPolicy,
+            usesDefault,
             usesFallback,
             requirements,
             fingerprint);
     }
 
-    private static bool IsDefaultAuthorizeData(IAuthorizeData data) =>
-        string.IsNullOrWhiteSpace(data.Policy) &&
-        string.IsNullOrWhiteSpace(data.Roles) &&
-        string.IsNullOrWhiteSpace(data.AuthenticationSchemes);
+    private sealed class PolicyContributionTracker : IAuthorizationPolicyProvider
+    {
+        private readonly IAuthorizationPolicyProvider inner;
+
+        public PolicyContributionTracker(IAuthorizationPolicyProvider inner) => this.inner = inner;
+
+        public bool UsedDefaultPolicy { get; private set; }
+
+        public bool UsedFallbackPolicy { get; private set; }
+
+        public bool AllowsCachingPolicies => inner.AllowsCachingPolicies;
+
+        public async Task<AuthorizationPolicy> GetDefaultPolicyAsync()
+        {
+            AuthorizationPolicy policy = await inner.GetDefaultPolicyAsync().ConfigureAwait(false);
+            UsedDefaultPolicy = true;
+            return policy;
+        }
+
+        public async Task<AuthorizationPolicy?> GetFallbackPolicyAsync()
+        {
+            AuthorizationPolicy? policy = await inner.GetFallbackPolicyAsync().ConfigureAwait(false);
+            UsedFallbackPolicy = policy is not null;
+            return policy;
+        }
+
+        public Task<AuthorizationPolicy?> GetPolicyAsync(string policyName) => inner.GetPolicyAsync(policyName);
+    }
 
     private sealed record EndpointAuthorizationFacts(
         AuthSurfaceAuthorizationKind AuthorizationKind,
