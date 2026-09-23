@@ -156,19 +156,24 @@ public sealed class AuthSurfaceScanner
 
                 if (requirementData.Count > 0)
                 {
-                    var requirementPolicyBuilder = new AuthorizationPolicyBuilder();
+                    var requirementDataRequirements = new List<IAuthorizationRequirement>();
                     foreach (IAuthorizationRequirementData metadata in requirementData)
                     {
-                        foreach (IAuthorizationRequirement requirement in metadata.GetRequirements())
+                        requirementDataRequirements.AddRange(metadata.GetRequirements());
+                    }
+
+                    if (requirementDataRequirements.Count > 0)
+                    {
+                        var requirementPolicyBuilder = new AuthorizationPolicyBuilder();
+                        foreach (IAuthorizationRequirement requirement in requirementDataRequirements)
                         {
                             requirementPolicyBuilder.AddRequirements(requirement);
                         }
+                        AuthorizationPolicy requirementPolicy = requirementPolicyBuilder.Build();
+                        effectivePolicy = effectivePolicy is null
+                            ? requirementPolicy
+                            : AuthorizationPolicy.Combine(effectivePolicy, requirementPolicy);
                     }
-
-                    AuthorizationPolicy requirementPolicy = requirementPolicyBuilder.Build();
-                    effectivePolicy = effectivePolicy is null
-                        ? requirementPolicy
-                        : AuthorizationPolicy.Combine(effectivePolicy, requirementPolicy);
                 }
             }
             catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
