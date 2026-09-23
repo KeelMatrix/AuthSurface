@@ -55,8 +55,8 @@ if ([string]$packageMetadata.PackageId -ne 'KeelMatrix.AuthSurface' -or
 }
 
 $telemetryVersion = @($packagesProps.Project.ItemGroup.PackageVersion | Where-Object Include -eq 'KeelMatrix.Telemetry' | Select-Object -First 1)
-if ($null -eq $telemetryVersion -or [string]$telemetryVersion.Version -ne '[0.1.0]') {
-    throw 'KeelMatrix.Telemetry must remain the exact [0.1.0] package dependency.'
+if ($null -eq $telemetryVersion -or [string]$telemetryVersion.Version -ne '[0.1.1]') {
+    throw 'KeelMatrix.Telemetry must remain the exact [0.1.1] package dependency.'
 }
 
 foreach ($readme in @($rootReadme, $packageReadme)) {

@@ -11,7 +11,7 @@ try {
 <Project><PropertyGroup><Version>0.1.0</Version></PropertyGroup></Project>
 '@ | Set-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Encoding utf8
     @'
-<Project><ItemGroup><PackageVersion Include="KeelMatrix.Telemetry" Version="[0.1.0]" /></ItemGroup></Project>
+<Project><ItemGroup><PackageVersion Include="KeelMatrix.Telemetry" Version="[0.1.1]" /></ItemGroup></Project>
 '@ | Set-Content -LiteralPath (Join-Path $root 'Directory.Packages.props') -Encoding utf8
     @'
 <Project><PropertyGroup><TargetFramework>net8.0</TargetFramework><PackageId>KeelMatrix.AuthSurface</PackageId></PropertyGroup></Project>

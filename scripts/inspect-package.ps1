@@ -104,7 +104,7 @@ try {
     Write-Output "Dependencies=$($dependencyNames -join ',')"
     $telemetryDependency = @($metadata.dependencies.group.dependency | Where-Object id -eq 'KeelMatrix.Telemetry' | Select-Object -First 1)
     if ($dependencyNames.Count -ne 1 -or $dependencyNames[0] -ne 'KeelMatrix.Telemetry' -or
-        $null -eq $telemetryDependency -or $telemetryDependency.version -ne '[0.1.0]') {
+        $null -eq $telemetryDependency -or $telemetryDependency.version -ne '[0.1.1]') {
         throw 'Package dependency set is not exactly KeelMatrix.Telemetry.'
     }
 
