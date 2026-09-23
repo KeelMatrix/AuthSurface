@@ -114,7 +114,7 @@ public sealed class AuthSurfaceScanner
                         expected: "protected-or-explicit-anonymous",
                         actual: endpoint.AuthorizationKind.ToString()));
             }
-            else if (options.StrictFallbackPolicy && endpoint.AuthorizationKind == AuthSurfaceAuthorizationKind.FallbackProtected)
+            else if (options.StrictFallbackPolicy && endpoint.UsesFallbackPolicy)
             {
                 violations.Add(
                     new AuthSurfaceViolation(
@@ -143,6 +143,7 @@ public sealed class AuthSurfaceScanner
         bool hasAnyAuthorizationMetadata = hasEndpointAuthorization || requirementData.Count > 0;
         bool isAnonymous = endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null;
         AuthorizationPolicy? effectivePolicy = null;
+        var requirementDataRequirements = new List<IAuthorizationRequirement>();
         var policyContributions = new PolicyContributionTracker(policyProvider);
 
         if (!isAnonymous || hasAnyAuthorizationMetadata)
@@ -154,26 +155,22 @@ public sealed class AuthSurfaceScanner
                     authorizeData,
                     explicitPolicies).WaitAsync(cancellationToken).ConfigureAwait(false);
 
-                if (requirementData.Count > 0)
+                foreach (IAuthorizationRequirementData metadata in requirementData)
                 {
-                    var requirementDataRequirements = new List<IAuthorizationRequirement>();
-                    foreach (IAuthorizationRequirementData metadata in requirementData)
-                    {
-                        requirementDataRequirements.AddRange(metadata.GetRequirements());
-                    }
+                    requirementDataRequirements.AddRange(metadata.GetRequirements());
+                }
 
-                    if (requirementDataRequirements.Count > 0)
+                if (requirementDataRequirements.Count > 0)
+                {
+                    var requirementPolicyBuilder = new AuthorizationPolicyBuilder();
+                    foreach (IAuthorizationRequirement requirement in requirementDataRequirements)
                     {
-                        var requirementPolicyBuilder = new AuthorizationPolicyBuilder();
-                        foreach (IAuthorizationRequirement requirement in requirementDataRequirements)
-                        {
-                            requirementPolicyBuilder.AddRequirements(requirement);
-                        }
-                        AuthorizationPolicy requirementPolicy = requirementPolicyBuilder.Build();
-                        effectivePolicy = effectivePolicy is null
-                            ? requirementPolicy
-                            : AuthorizationPolicy.Combine(effectivePolicy, requirementPolicy);
+                        requirementPolicyBuilder.AddRequirements(requirement);
                     }
+                    AuthorizationPolicy requirementPolicy = requirementPolicyBuilder.Build();
+                    effectivePolicy = effectivePolicy is null
+                        ? requirementPolicy
+                        : AuthorizationPolicy.Combine(effectivePolicy, requirementPolicy);
                 }
             }
             catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
@@ -191,13 +188,13 @@ public sealed class AuthSurfaceScanner
         {
             kind = AuthSurfaceAuthorizationKind.ExplicitAnonymous;
         }
+        else if (hasEndpointAuthorization || requirementDataRequirements.Count > 0)
+        {
+            kind = AuthSurfaceAuthorizationKind.ExplicitProtected;
+        }
         else if (usesFallback)
         {
             kind = AuthSurfaceAuthorizationKind.FallbackProtected;
-        }
-        else if (hasAnyAuthorizationMetadata && effectivePolicy is not null)
-        {
-            kind = AuthSurfaceAuthorizationKind.ExplicitProtected;
         }
         else
         {

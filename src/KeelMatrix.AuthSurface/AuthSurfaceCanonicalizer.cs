@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Constraints;
 using Microsoft.AspNetCore.Routing.Patterns;
 
 namespace KeelMatrix.AuthSurface;
@@ -172,7 +173,7 @@ internal static class AuthSurfaceCanonicalizer
                         builder.Append(caseFoldRouteComponents ? parameter.Name.ToUpperInvariant() : parameter.Name);
                         foreach (RoutePatternParameterPolicyReference policy in parameter.ParameterPolicies)
                         {
-                            builder.Append(':').Append(policy.Content);
+                            builder.Append(':').Append(RenderParameterPolicy(policy, parameter.Name));
                         }
 
                         if (parameter.Default is not null)
@@ -193,4 +194,80 @@ internal static class AuthSurfaceCanonicalizer
 
         return builder.Length == 0 ? "/" : builder.ToString();
     }
+
+    private static string RenderParameterPolicy(RoutePatternParameterPolicyReference policy, string parameterName)
+    {
+        if (policy.Content is not null)
+        {
+            return policy.Content;
+        }
+
+        if (policy.ParameterPolicy is null)
+        {
+            throw new AuthSurfaceAnalysisException(
+                "unsupported-parameter-policy",
+                $"Route parameter '{parameterName}' has a parameter policy without stable content; use a supported framework constraint or a parsed route pattern.");
+        }
+
+        return RenderParameterPolicy(policy.ParameterPolicy, parameterName);
+    }
+
+    private static string RenderParameterPolicy(IParameterPolicy policy, string parameterName) =>
+        policy switch
+        {
+            AlphaRouteConstraint => "alpha",
+            BoolRouteConstraint => "bool",
+            DateTimeRouteConstraint => "datetime",
+            DecimalRouteConstraint => "decimal",
+            DoubleRouteConstraint => "double",
+            FileNameRouteConstraint => "file",
+            FloatRouteConstraint => "float",
+            GuidRouteConstraint => "guid",
+            IntRouteConstraint => "int",
+            LongRouteConstraint => "long",
+            NonFileNameRouteConstraint => "nonfile",
+            RequiredRouteConstraint => "required",
+            MinLengthRouteConstraint constraint => $"minlength({constraint.MinLength.ToString(CultureInfo.InvariantCulture)})",
+            MaxLengthRouteConstraint constraint => $"maxlength({constraint.MaxLength.ToString(CultureInfo.InvariantCulture)})",
+            LengthRouteConstraint constraint => $"length({constraint.MinLength.ToString(CultureInfo.InvariantCulture)},{constraint.MaxLength.ToString(CultureInfo.InvariantCulture)})",
+            MinRouteConstraint constraint => $"min({constraint.Min.ToString(CultureInfo.InvariantCulture)})",
+            MaxRouteConstraint constraint => $"max({constraint.Max.ToString(CultureInfo.InvariantCulture)})",
+            RangeRouteConstraint constraint => $"range({constraint.Min.ToString(CultureInfo.InvariantCulture)},{constraint.Max.ToString(CultureInfo.InvariantCulture)})",
+            HttpMethodRouteConstraint constraint => RenderHttpMethodPolicy(constraint),
+            CompositeRouteConstraint constraint => RenderCompositePolicy(constraint.Constraints, parameterName, "composite"),
+            OptionalRouteConstraint constraint => RenderCompositePolicy([constraint.InnerConstraint], parameterName, "optional"),
+            RegexRouteConstraint constraint => RenderRegexPolicy(constraint),
+            _ => throw new AuthSurfaceAnalysisException(
+                "unsupported-parameter-policy",
+                $"Route parameter '{parameterName}' uses unsupported parameter policy type '{StableTypeIdentity(policy.GetType())}'; AuthSurface cannot produce a stable route identity. Use a parsed route constraint or exclude the endpoint explicitly."),
+        };
+
+    private static string RenderHttpMethodPolicy(HttpMethodRouteConstraint policy) =>
+        "httpMethod(" + string.Join(',', policy.AllowedMethods.OrderBy(static method => method, StringComparer.Ordinal)) + ")";
+
+    private static string RenderCompositePolicy(
+        IEnumerable<IRouteConstraint> constraints,
+        string parameterName,
+        string name)
+    {
+        var rendered = new List<string>();
+        foreach (IRouteConstraint constraint in constraints)
+        {
+            if (constraint is not IParameterPolicy parameterPolicy)
+            {
+                throw new AuthSurfaceAnalysisException(
+                    "unsupported-parameter-policy",
+                    $"Route parameter '{parameterName}' uses a composite constraint with an unsupported member type '{StableTypeIdentity(constraint.GetType())}'; AuthSurface cannot produce a stable route identity.");
+            }
+
+            rendered.Add(RenderParameterPolicy(parameterPolicy, parameterName));
+        }
+
+        return name + "(" + string.Join(',', rendered) + ")";
+    }
+
+    private static string RenderRegexPolicy(RegexRouteConstraint policy) =>
+        // Regex.ToString() is the framework Regex representation of its stable pattern,
+        // not an arbitrary application policy object's diagnostic string.
+        "regex(" + policy.Constraint + ";options=" + ((int)policy.Constraint.Options).ToString(CultureInfo.InvariantCulture) + ")";
 }

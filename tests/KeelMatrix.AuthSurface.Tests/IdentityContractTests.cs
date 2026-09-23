@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Constraints;
 using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -106,6 +107,77 @@ public sealed class IdentityContractTests
         Assert.Equal("/files/{*path}", endpoint.Route);
     }
 
+    [Fact]
+    public async Task ProgrammaticParameterPoliciesRemainDistinctInCanonicalIdentity()
+    {
+        RoutePattern firstPattern = ProgrammaticPattern(new RegexRouteConstraint("^\\d+$"));
+        RoutePattern secondPattern = ProgrammaticPattern(new RegexRouteConstraint("^\\D+$"));
+        var source = new DefaultEndpointDataSource([
+            BuildEndpoint(firstPattern),
+            BuildEndpoint(secondPattern),
+        ]);
+
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [source],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        Assert.Equal(2, report.Endpoints.Count);
+        Assert.NotEqual(report.Endpoints[0].Route, report.Endpoints[1].Route);
+    }
+
+    [Fact]
+    public async Task SupportedProgrammaticParameterPolicyRoundTripsToStableRouteIdentity()
+    {
+        RoutePattern pattern = ProgrammaticPattern(new IntRouteConstraint());
+        var source = new DefaultEndpointDataSource([BuildEndpoint(pattern)]);
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [source],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+        Assert.Equal("/items/{id:int}", endpoint.Route);
+
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Create(report);
+        Assert.Equal(endpoint.Route, Assert.Single(baseline.Endpoints).Route);
+    }
+
+    [Fact]
+    public async Task UnsupportedProgrammaticParameterPolicyFailsClosed()
+    {
+        RoutePattern pattern = ProgrammaticPattern(new UnsupportedParameterPolicy());
+        var source = new DefaultEndpointDataSource([BuildEndpoint(pattern)]);
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner([source], new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("unsupported-parameter-policy", exception.Code);
+        Assert.Contains("id", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(UnsupportedParameterPolicy), exception.Message, StringComparison.Ordinal);
+    }
+
+    private static RoutePattern ProgrammaticPattern(IParameterPolicy policy) =>
+        RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("items")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "id",
+                        null!,
+                        RoutePatternParameterKind.Standard,
+                        [RoutePatternFactory.ParameterPolicy(policy)]),
+                ]),
+            ]);
+
+    private static RouteEndpoint BuildEndpoint(RoutePattern pattern)
+    {
+        RouteEndpointBuilder builder = new(_ => Task.CompletedTask, pattern, order: 0);
+        builder.Metadata.Add(new HttpMethodMetadata(["GET"]));
+        builder.Metadata.Add(new AllowAnonymousAttribute());
+        return (RouteEndpoint)builder.Build();
+    }
+
     private static WebApplication BuildApplication(Action<WebApplication> configureEndpoints)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -132,6 +204,10 @@ public sealed class IdentityContractTests
 
         public Task<AuthorizationPolicy?> GetPolicyAsync(string policyName) =>
             Task.FromResult<AuthorizationPolicy?>(null);
+    }
+
+    private sealed class UnsupportedParameterPolicy : IParameterPolicy
+    {
     }
 }
 #pragma warning restore ASP0022

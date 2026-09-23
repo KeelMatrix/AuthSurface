@@ -1,0 +1,14 @@
+# Acceptance delta
+
+The following checks were sharpened after the previous matrix reported these rows as passing.
+
+| Row | Why the earlier matrix claimed PASS | Explicit check now required |
+| --- | --- | --- |
+| Classification contract | It verified fallback provenance and requirement fingerprints, then inferred classification from the fallback flag. | Assert the four-state decision table for non-empty and empty requirement data with and without fallback, baseline fallback changes, strict fallback, and anonymous precedence. |
+| Baseline round-trip identity | It compared an in-memory baseline and did not exercise the serialized reader with whitespace-bearing policy names. | Scan, write to disk, read, compare unchanged output, then compare `Policy` with ` Policy ` and require `endpoint-policy-changed`. |
+| Programmatic parameter policies | It covered parsed route text and catch-alls, but not `ParameterPolicy`-backed references with no `RawText`. | Prove distinct supported constraints remain distinct, supported identities survive a baseline round trip, and unsupported policies raise `unsupported-parameter-policy`. |
+| Activation coverage | It exercised verifier policy evaluation and baseline comparison, but not the documented report assertion or the assertion nested in baseline creation. | Count exactly one activation for each public evaluation path; count none for scan-only and zero-endpoint paths; test suppression and telemetry failure isolation. |
+| Documentation discoverability and limitations | It checked that documentation files existed and that the package README described the API, without checking root links, compatibility boundaries, baseline sensitivity, or concrete diff output. | Require root and package links to `docs/api-reference.md`, explicit `net8.0`/handler/business-semantics/local-baseline limitations, and examples using the shipped structured codes. |
+| Line-ending policy | It checked the current checkout but did not compare editor and Git normalization declarations. | Require `.editorconfig` and `.gitattributes` to declare LF for PowerShell, and run the same validation scripts on Windows, Linux, and macOS CI legs. |
+
+The common cause of the earlier false PASS was that each row tested a nearby implementation artifact rather than the complete public contract, so an inferred condition substituted for a direct regression. These rows now name the boundary, negative control, and serialized or cross-platform path that must be exercised.

@@ -11,6 +11,11 @@ public static class AuthSurfaceVerifier
     public static AuthSurfaceVerificationResult VerifyPolicy(AuthSurfaceReport report)
     {
         ArgumentNullException.ThrowIfNull(report);
+        return EvaluatePolicy(report);
+    }
+
+    internal static AuthSurfaceVerificationResult EvaluatePolicy(AuthSurfaceReport report)
+    {
         AuthSurfaceVerificationResult result = new(report.PolicyViolations, usedBaseline: false);
         AuthSurfaceTelemetryCoordinator.RecordEvaluation(report.Endpoints.Count, result.Violations.Count, usedBaseline: false);
         return result;

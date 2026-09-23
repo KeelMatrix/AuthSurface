@@ -19,3 +19,6 @@ csharp_style_var_when_type_is_apparent = true:suggestion
 
 [*.md]
 trim_trailing_whitespace = true
+
+[*.ps1]
+end_of_line = lf

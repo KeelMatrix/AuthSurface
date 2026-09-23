@@ -23,10 +23,6 @@ public sealed class AuthSurfaceReport
     /// <summary>Throws when the default or configured policy check found violations.</summary>
     public void AssertPolicyCompliant()
     {
-        if (!IsPolicyCompliant)
-        {
-            throw new AuthSurfaceVerificationException(
-                new AuthSurfaceVerificationResult(PolicyViolations, usedBaseline: false));
-        }
+        AuthSurfaceVerifier.EvaluatePolicy(this).AssertValid();
     }
 }

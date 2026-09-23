@@ -41,8 +41,14 @@ AuthSurfaceVerifier.Compare(report, "authsurface.json").AssertValid();
 
 The package README is the canonical consumer guide for updates, classifications, limitations, and privacy: [`src/KeelMatrix.AuthSurface/README.md`](src/KeelMatrix.AuthSurface/README.md).
 
+## Limitations
+
+AuthSurface targets `net8.0` only. It records runtime authorization metadata and policy requirements; it does not execute handlers or prove business-level authorization semantics. The local `authsurface.json` baseline is reviewable source-controlled state and may reveal internal application architecture, so protect and review it accordingly.
+
 ## Documentation
 
+- [API reference](docs/api-reference.md)
+- [Acceptance delta](docs/acceptance-delta.md)
 - [Endpoint identity](docs/endpoint-identity.md)
 - [Privacy](PRIVACY.md)
 - [Developer guide](AGENTS.md)

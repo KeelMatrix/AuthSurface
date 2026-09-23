@@ -42,6 +42,8 @@ The recurring test reads the accepted baseline and never creates or rewrites it:
 AuthSurfaceVerifier.Compare(report, "authsurface.json").AssertValid();
 ```
 
+The complete public surface is summarized in the repository's [API reference](https://github.com/KeelMatrix/AuthSurface/blob/main/docs/api-reference.md).
+
 ## What the scan records
 
 AuthSurface emits one deterministic record for each normalized route and HTTP method contract. An endpoint accepting `GET` and `POST` produces one record per method. Each record contains the route pattern, method, one of the four classifications, named policies, roles, authentication schemes, default/fallback contribution flags, canonical supported requirements, and a stable requirement fingerprint.
@@ -49,8 +51,8 @@ AuthSurface emits one deterministic record for each normalized route and HTTP me
 The four classifications are:
 
 - `ExplicitAnonymous`: runtime metadata contains `IAllowAnonymous`; the intentional public endpoint remains visible.
-- `ExplicitProtected`: endpoint authorization metadata or an explicit `AuthorizationPolicy` contributes a policy.
-- `FallbackProtected`: no endpoint-specific authorization metadata exists, but the application's fallback policy protects it.
+- `ExplicitProtected`: non-empty endpoint authorization metadata, an explicit `AuthorizationPolicy`, or non-empty requirement data contributes protection.
+- `FallbackProtected`: no endpoint-specific protecting contribution exists, but the application's fallback policy protects it.
 - `Unprotected`: no explicit anonymous metadata and no effective protecting policy exist; this fails the default policy check.
 
 `[Authorize]`, `[AllowAnonymous]`, endpoint and route-group `.RequireAuthorization()`, named policies, roles, schemes, default/fallback policy, and dynamic policy providers are evaluated from runtime endpoint metadata and the application's real `IAuthorizationPolicyProvider`. Unknown requirements are represented only by a stable type identity and an explicit `opaque` marker; arbitrary custom requirement object graphs are never reflected. The `requirements` list preserves the order produced by the framework as it combines `IAuthorizeData`-derived requirements, explicit `AuthorizationPolicy` requirements, and `IAuthorizationRequirementData`; it does not sort or silently deduplicate that sequence. Framework-preserved duplicate requirements remain in the list.
@@ -75,6 +77,7 @@ The four classifications are:
 | `baseline-schema-unsupported` | The file declares a schema version other than the supported version 1. | Migrate the file explicitly to schema version 1; AuthSurface does not downgrade it automatically. |
 | `baseline-too-large` | The file exceeds the default 1 MiB input limit (or the limit supplied to `Read`). | Reduce the baseline size or provide an intentional, bounded maximum appropriate for the application. |
 | `baseline-read-failed` | The baseline could not be opened or read because of an I/O or access failure. | Check that the path exists and that the process has permission to read the file, then retry. |
+| `unsupported-parameter-policy` | A programmatic route parameter policy has no stable representation supported by AuthSurface. | Use a parsed route constraint, a supported framework constraint, or explicitly exclude the endpoint. |
 
 For all diagnostics, inspect the `Code` and message on `AuthSurfaceBaselineException`. The original file remains byte-for-byte unchanged on failure.
 
@@ -82,13 +85,34 @@ An endpoint entry requires `route`, exactly one `methods` value, one of the four
 
 If the scan finds no endpoints, verify that the host was started and that endpoint data sources were resolved after route mapping; do not create an empty baseline until that is intentional. A `policy-resolution-failed` result means the application's real policy provider could not resolve a named policy, so register the provider and scan the completed host again. A `duplicate-endpoint-identity` result means two runtime endpoints normalize to one route/method identity; disambiguate or explicitly exclude the infrastructure endpoint before creating a baseline.
 
-Endpoint identity is the normalized route pattern plus HTTP method. Routing-equivalent route literals and parameter names are case-folded, while constraint names and arguments, defaults, and other semantically significant pattern content remain intact. For example, `regex(^\\d+$)` and `regex(^\\D+$)` are different identities. The readable record may retain original casing. Equivalent route literals or parameter names therefore fail with `duplicate-endpoint-identity`, while genuinely different routes remain distinct. Programmatically constructed patterns without `RawText` use the same deterministic renderer; encoded-slash catch-alls render as `{*name}` and non-encoded catch-alls as `{**name}`.
+Endpoint identity is the normalized route pattern plus HTTP method. Routing-equivalent route literals and parameter names are case-folded, while constraint names and arguments, defaults, and other semantically significant pattern content remain intact. For example, `regex(^\\d+$)` and `regex(^\\D+$)` are different identities. The readable record may retain original casing. Equivalent route literals or parameter names therefore fail with `duplicate-endpoint-identity`, while genuinely different routes remain distinct. Programmatically constructed patterns without `RawText` use the same deterministic renderer for catch-alls and supported parameter-policy objects; an unrepresentable parameter policy fails with `unsupported-parameter-policy` instead of being omitted. Encoded-slash catch-alls render as `{*name}` and non-encoded catch-alls as `{**name}`.
 
-Baseline comparison reports structured additions, removals, changes, and policy violations. Routes and methods appear only in local diagnostics; source locations, claims, tokens, request bodies, and user data are never collected. Use `AuthSurfaceScanOptions.ExcludedRoutePatterns` for intentional infrastructure exclusions. Strict fallback mode is available through `StrictFallbackPolicy` when every protected endpoint must carry endpoint-level authorization metadata.
+Baseline comparison reports structured additions, removals, changes, and policy violations. Routes and methods appear only in local diagnostics; source locations, claims, tokens, request bodies, and user data are never collected. Use `AuthSurfaceScanOptions.ExcludedRoutePatterns` for intentional infrastructure exclusions. Strict fallback mode is available through `StrictFallbackPolicy` when protected endpoints must not rely on fallback-policy contribution.
 
 ## What AuthSurface proves
 
 AuthSurface proves that completed runtime endpoint data sources contain the discovered route/method contracts and that the framework's effective policy metadata resolves to the recorded classification and supported requirement fingerprint. It can detect endpoint additions, removals, and authorization metadata changes against a reviewed local baseline.
+
+## Reading structured diffs
+
+The verifier uses stable codes with human-readable messages:
+
+```text
+endpoint-added
+Endpoint '/internal/export' [GET] was added to the authorization surface.
+
+endpoint-removed
+Endpoint '/internal/export' [GET] was removed from the authorization surface.
+
+endpoint-classification-changed
+Endpoint '/secure' [GET] authorization classification changed from ExplicitProtected to ExplicitAnonymous.
+
+endpoint-policy-changed
+Endpoint '/secure' [GET] named policies changed from ["Read"] to ["Write"].
+
+endpoint-requirement-changed
+Endpoint '/secure' [GET] effective requirements changed from requirements=["requirement"]; fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa to requirements=["changed"]; fingerprint=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.
+```
 
 ## What AuthSurface does not prove
 

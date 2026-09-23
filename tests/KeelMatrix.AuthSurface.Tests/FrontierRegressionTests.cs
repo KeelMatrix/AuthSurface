@@ -384,7 +384,7 @@ public sealed class FrontierRegressionTests
     }
 
     [Fact]
-    public async Task RequirementDataTracksFallbackWithAndWithoutFallbackAndStrictMode()
+    public async Task RequirementDataIsExplicitWhileFallbackProvenanceRemainsIndependent()
     {
         await using WebApplication baselineApp = BuildApplication(
             application =>
@@ -398,7 +398,7 @@ public sealed class FrontierRegressionTests
         AuthSurfaceEndpoint baselineEndpoint = Assert.Single(
             baselineReport.Endpoints.Where(item => item.Route == "/requirement-fallback"));
 
-        Assert.Equal(AuthSurfaceAuthorizationKind.FallbackProtected, baselineEndpoint.AuthorizationKind);
+        Assert.Equal(AuthSurfaceAuthorizationKind.ExplicitProtected, baselineEndpoint.AuthorizationKind);
         Assert.True(baselineEndpoint.UsesFallbackPolicy);
         Assert.Contains(baselineEndpoint.Requirements, item => item.Contains("fallback", StringComparison.Ordinal));
         AuthSurfaceReport strictReport = await new AuthSurfaceScanner(baselineApp.Services).ScanAsync(
@@ -424,8 +424,70 @@ public sealed class FrontierRegressionTests
             changedReport,
             AuthSurfaceBaseline.Create(baselineReport));
 
-        Assert.Contains(result.Violations, item => item.Code == "endpoint-classification-changed");
         Assert.Contains(result.Violations, item => item.Code == "endpoint-fallback-policy-changed");
+    }
+
+    [Fact]
+    public async Task NonEmptyRequirementDataWithoutFallbackIsExplicitProtected()
+    {
+        await using WebApplication app = BuildApplication(
+            application => application.MapGet("/requirement-only", () => Results.Ok())
+                .WithMetadata(new ClaimRequirementData("requirement")),
+            fallbackPolicy: false);
+        await app.StartAsync();
+
+        AuthSurfaceEndpoint endpoint = Assert.Single(
+            (await new AuthSurfaceScanner(app.Services).ScanAsync()).Endpoints
+                .Where(item => item.Route == "/requirement-only"));
+
+        Assert.Equal(AuthSurfaceAuthorizationKind.ExplicitProtected, endpoint.AuthorizationKind);
+        Assert.False(endpoint.UsesFallbackPolicy);
+        Assert.Contains(endpoint.Requirements, item => item.Contains("requirement", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AllowAnonymousPrecedesExplicitDefaultAndFallbackMetadata()
+    {
+        await using WebApplication app = BuildApplication(
+            application =>
+            {
+                application.MapGet("/anonymous-explicit", () => Results.Ok())
+                    .WithMetadata(new AuthorizationPolicyBuilder().RequireClaim("scope", "explicit").Build())
+                    .WithMetadata(new AllowAnonymousAttribute());
+                application.MapGet("/anonymous-default", () => Results.Ok())
+                    .RequireAuthorization()
+                    .WithMetadata(new AllowAnonymousAttribute());
+                application.MapGet("/anonymous-fallback", () => Results.Ok())
+                    .WithMetadata(new AllowAnonymousAttribute());
+            },
+            fallbackPolicy: true);
+        await app.StartAsync();
+
+        AuthSurfaceReport report = await new AuthSurfaceScanner(app.Services).ScanAsync();
+        foreach (string route in new[] { "/anonymous-explicit", "/anonymous-default", "/anonymous-fallback" })
+        {
+            AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints.Where(item => item.Route == route));
+            Assert.Equal(AuthSurfaceAuthorizationKind.ExplicitAnonymous, endpoint.AuthorizationKind);
+            Assert.False(endpoint.UsesFallbackPolicy);
+            Assert.DoesNotContain(report.PolicyViolations, item => item.Route == route);
+        }
+    }
+
+    [Fact]
+    public async Task EmptyRequirementDataWithoutFallbackRemainsUnprotected()
+    {
+        await using WebApplication app = BuildApplication(
+            application => application.MapGet("/empty-no-fallback-repeat", () => Results.Ok())
+                .WithMetadata(new EmptyRequirementData()),
+            fallbackPolicy: false);
+        await app.StartAsync();
+
+        AuthSurfaceEndpoint endpoint = Assert.Single(
+            (await new AuthSurfaceScanner(app.Services).ScanAsync()).Endpoints
+                .Where(item => item.Route == "/empty-no-fallback-repeat"));
+
+        Assert.Equal(AuthSurfaceAuthorizationKind.Unprotected, endpoint.AuthorizationKind);
+        Assert.False(endpoint.UsesFallbackPolicy);
     }
 
     [Fact]
@@ -465,6 +527,43 @@ public sealed class FrontierRegressionTests
             AuthSurfaceBaseline.Create(baselineReport));
 
         Assert.Contains(result.Violations, item => item.Code == "endpoint-policy-changed");
+    }
+
+    [Fact]
+    public async Task ExactNamedPolicyIdentitySurvivesDiskBaselineRoundTrip()
+    {
+        static void AddEquivalentPolicyProvider(IServiceCollection services) =>
+            services.AddSingleton<IAuthorizationPolicyProvider, EquivalentPolicyProvider>();
+
+        await using WebApplication baselineApp = BuildApplication(
+            application => application.MapGet("/named-round-trip", () => Results.Ok())
+                .WithMetadata(new AuthorizeAttribute { Policy = " Policy " }),
+            configureServices: AddEquivalentPolicyProvider);
+        await baselineApp.StartAsync();
+        AuthSurfaceReport baselineReport = await new AuthSurfaceScanner(baselineApp.Services).ScanAsync();
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(baselineReport, path, overwrite: false);
+        AuthSurfaceBaseline roundTripped = AuthSurfaceBaseline.Read(path);
+
+        AuthSurfaceVerificationResult unchanged = AuthSurfaceVerifier.Compare(baselineReport, roundTripped);
+        Assert.True(unchanged.IsValid);
+        Assert.Equal([" Policy "], roundTripped.Endpoints.Single(item => item.Route == "/named-round-trip").Policies);
+
+        await using WebApplication changedApp = BuildApplication(
+            application => application.MapGet("/named-round-trip", () => Results.Ok())
+                .WithMetadata(new AuthorizeAttribute { Policy = "Policy" }),
+            configureServices: AddEquivalentPolicyProvider);
+        await changedApp.StartAsync();
+        AuthSurfaceVerificationResult changed = AuthSurfaceVerifier.Compare(
+            await new AuthSurfaceScanner(changedApp.Services).ScanAsync(),
+            roundTripped);
+
+        AuthSurfaceViolation violation = Assert.Single(
+            changed.Violations.Where(item => item.Code == "endpoint-policy-changed"));
+        Assert.Equal("[\" Policy \"]", violation.Expected);
+        Assert.Equal("[\"Policy\"]", violation.Actual);
     }
 
     [Fact]
@@ -642,5 +741,18 @@ public sealed class FrontierRegressionTests
                     .RequireClaim("scope", "equivalent")
                     .Build())
                 : inner.GetPolicyAsync(policyName);
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public TemporaryDirectory()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "authsurface-tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose() => Directory.Delete(Path, recursive: true);
     }
 }

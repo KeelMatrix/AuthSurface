@@ -556,7 +556,7 @@ public sealed class AuthSurfaceBaseline
             AuthSurfaceCanonicalizer.NormalizeRoute(Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.Parse(document.Route)),
             document.Methods[0],
             kind,
-            AuthSurfaceCanonicalizer.OrderedDistinct(document.Policies),
+            AuthSurfaceCanonicalizer.OrderedDistinctNonBlankExact(document.Policies),
             AuthSurfaceCanonicalizer.OrderedDistinctExact(document.Roles),
             AuthSurfaceCanonicalizer.OrderedDistinctExact(document.Schemes),
             document.UsesDefaultPolicy,
