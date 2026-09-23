@@ -205,7 +205,7 @@ internal static class AuthSurfaceCanonicalizer
         if (policy.ParameterPolicy is null)
         {
             throw new AuthSurfaceAnalysisException(
-                "unsupported-parameter-policy",
+                AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
                 $"Route parameter '{parameterName}' has a parameter policy without stable content; use a supported framework constraint or a parsed route pattern.");
         }
 
@@ -238,7 +238,7 @@ internal static class AuthSurfaceCanonicalizer
             OptionalRouteConstraint constraint => RenderCompositePolicy([constraint.InnerConstraint], parameterName, "optional"),
             RegexRouteConstraint constraint => RenderRegexPolicy(constraint),
             _ => throw new AuthSurfaceAnalysisException(
-                "unsupported-parameter-policy",
+                AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
                 $"Route parameter '{parameterName}' uses unsupported parameter policy type '{StableTypeIdentity(policy.GetType())}'; AuthSurface cannot produce a stable route identity. Use a parsed route constraint or exclude the endpoint explicitly."),
         };
 
@@ -256,7 +256,7 @@ internal static class AuthSurfaceCanonicalizer
             if (constraint is not IParameterPolicy parameterPolicy)
             {
                 throw new AuthSurfaceAnalysisException(
-                    "unsupported-parameter-policy",
+                    AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
                     $"Route parameter '{parameterName}' uses a composite constraint with an unsupported member type '{StableTypeIdentity(constraint.GetType())}'; AuthSurface cannot produce a stable route identity.");
             }
 

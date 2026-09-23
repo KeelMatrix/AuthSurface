@@ -90,7 +90,7 @@ public sealed class AuthSurfaceScanner
                     if (!identities.Add(record.Identity))
                     {
                         throw new AuthSurfaceAnalysisException(
-                            "duplicate-endpoint-identity",
+                            AuthSurfaceDiagnosticCode.DuplicateEndpointIdentity,
                             $"Duplicate canonical endpoint identity '{route}' [{method}] was found; exclude or disambiguate the endpoint.");
                     }
 
@@ -107,7 +107,7 @@ public sealed class AuthSurfaceScanner
             {
                 violations.Add(
                     new AuthSurfaceViolation(
-                        "unprotected-endpoint",
+                        AuthSurfaceDiagnosticCode.UnprotectedEndpoint,
                         $"Endpoint '{endpoint.Route}' [{endpoint.Methods[0]}] is unprotected; add explicit authorization, allow anonymous metadata, or an intentional exclusion.",
                         endpoint.Route,
                         endpoint.Methods[0],
@@ -118,7 +118,7 @@ public sealed class AuthSurfaceScanner
             {
                 violations.Add(
                     new AuthSurfaceViolation(
-                        "fallback-policy-endpoint",
+                        AuthSurfaceDiagnosticCode.FallbackPolicyEndpoint,
                         $"Endpoint '{endpoint.Route}' [{endpoint.Methods[0]}] relies on the fallback policy; strict mode requires endpoint-level authorization metadata.",
                         endpoint.Route,
                         endpoint.Methods[0],
@@ -176,7 +176,7 @@ public sealed class AuthSurfaceScanner
             catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
             {
                 throw new AuthSurfaceAnalysisException(
-                    "policy-resolution-failed",
+                    AuthSurfaceDiagnosticCode.PolicyResolutionFailed,
                     $"Authorization policy resolution failed for '{route}'. Register a resolvable policy provider and retry.");
             }
         }

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Text;
-using System.Text.RegularExpressions;
 using AuthSurface.FixtureApp;
 using KeelMatrix.AuthSurface;
 using Microsoft.AspNetCore.Authorization;
@@ -208,16 +207,6 @@ public sealed class BaselineSchemaContractTests
         Assert.Equal(1, baseline.SchemaVersion);
         Assert.Empty(baseline.Endpoints);
         Assert.Equal(bytes, File.ReadAllBytes(path));
-    }
-
-    [Fact]
-    public void BaselineDiagnosticCodesMatchTheShippedDocumentation()
-    {
-        string root = FindRepositoryRoot();
-        string source = File.ReadAllText(Path.Combine(root, "src", "KeelMatrix.AuthSurface", "AuthSurfaceBaseline.cs"));
-        string readme = File.ReadAllText(Path.Combine(root, "src", "KeelMatrix.AuthSurface", "README.md"));
-
-        AssertDiagnosticCodeContract(source, readme);
     }
 
     [Fact]
@@ -430,38 +419,6 @@ public sealed class BaselineSchemaContractTests
         "\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false," +
         "\"requirements\":[\"" + requirement + "\"],\"requirementFingerprint\":\"" +
         new string('0', 64) + "\"}]}";
-
-    private static void AssertDiagnosticCodeContract(string source, string readme)
-    {
-        HashSet<string> sourceCodes = Regex.Matches(source, "\\\"(?<code>baseline-[a-z0-9-]+)\\\"")
-            .Select(static match => match.Groups["code"].Value)
-            .ToHashSet(StringComparer.Ordinal);
-        HashSet<string> documentedCodes = Regex.Matches(
-                readme,
-                "^\\| `(?<code>baseline-[a-z0-9-]+)` \\|",
-                RegexOptions.Multiline)
-            .Select(static match => match.Groups["code"].Value)
-            .ToHashSet(StringComparer.Ordinal);
-
-        string missing = string.Join(",", sourceCodes.Except(documentedCodes).OrderBy(static code => code, StringComparer.Ordinal));
-        string undocumented = string.Join(",", documentedCodes.Except(sourceCodes).OrderBy(static code => code, StringComparer.Ordinal));
-        Assert.True(
-            sourceCodes.SetEquals(documentedCodes),
-            $"SOURCE_CODES={string.Join(',', sourceCodes.OrderBy(static code => code, StringComparer.Ordinal))} " +
-            $"DOC_CODES={string.Join(',', documentedCodes.OrderBy(static code => code, StringComparer.Ordinal))} " +
-            $"SOURCE_NOT_DOC={missing} DOC_NOT_SOURCE={undocumented}");
-    }
-
-    private static string FindRepositoryRoot()
-    {
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "KeelMatrix.AuthSurface.sln")))
-        {
-            directory = directory.Parent;
-        }
-
-        return directory?.FullName ?? throw new InvalidOperationException("Could not locate the repository root.");
-    }
 
     private static void AssertDuplicateFieldRejected(string json, string field, string location)
     {

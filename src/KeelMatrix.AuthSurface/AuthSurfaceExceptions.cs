@@ -3,10 +3,10 @@ namespace KeelMatrix.AuthSurface;
 /// <summary>Reports an invalid or ambiguous runtime authorization surface.</summary>
 public sealed class AuthSurfaceAnalysisException : InvalidOperationException
 {
-    internal AuthSurfaceAnalysisException(string code, string message)
+    internal AuthSurfaceAnalysisException(AuthSurfaceDiagnosticCode code, string message)
         : base(message)
     {
-        Code = code;
+        Code = code.GetValue();
     }
 
     /// <summary>Gets the stable analysis error code.</summary>
@@ -16,10 +16,13 @@ public sealed class AuthSurfaceAnalysisException : InvalidOperationException
 /// <summary>Reports a malformed, unsupported, or otherwise invalid baseline.</summary>
 public sealed class AuthSurfaceBaselineException : Exception
 {
-    internal AuthSurfaceBaselineException(string code, string message, Exception? innerException = null)
+    internal AuthSurfaceBaselineException(
+        AuthSurfaceDiagnosticCode code,
+        string message,
+        Exception? innerException = null)
         : base(message, innerException)
     {
-        Code = code;
+        Code = code.GetValue();
     }
 
     /// <summary>Gets the stable baseline error code.</summary>

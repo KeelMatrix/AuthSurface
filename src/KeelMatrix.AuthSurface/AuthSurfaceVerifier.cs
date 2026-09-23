@@ -44,7 +44,7 @@ public static class AuthSurfaceVerifier
             {
                 violations.Add(
                     new AuthSurfaceViolation(
-                        "endpoint-added",
+                        AuthSurfaceDiagnosticCode.EndpointAdded,
                         $"Endpoint '{endpoint.Route}' [{endpoint.Method}] was added to the authorization surface.",
                         endpoint.Route,
                         endpoint.Method,
@@ -65,7 +65,7 @@ public static class AuthSurfaceVerifier
             {
                 violations.Add(
                     new AuthSurfaceViolation(
-                        "endpoint-removed",
+                        AuthSurfaceDiagnosticCode.EndpointRemoved,
                         $"Endpoint '{endpoint.Route}' [{endpoint.Method}] was removed from the authorization surface.",
                         endpoint.Route,
                         endpoint.Method,
@@ -103,7 +103,7 @@ public static class AuthSurfaceVerifier
         if (expected.Route != actual.Route)
         {
             yield return Change(
-                "endpoint-route-changed",
+                AuthSurfaceDiagnosticCode.EndpointRouteChanged,
                 "route pattern",
                 expected,
                 actual,
@@ -114,7 +114,7 @@ public static class AuthSurfaceVerifier
         if (expected.AuthorizationKind != actual.AuthorizationKind)
         {
             yield return Change(
-                "endpoint-classification-changed",
+                AuthSurfaceDiagnosticCode.EndpointClassificationChanged,
                 "authorization classification",
                 expected,
                 actual,
@@ -125,7 +125,7 @@ public static class AuthSurfaceVerifier
         if (!expected.Policies.SequenceEqual(actual.Policies, StringComparer.Ordinal))
         {
             yield return Change(
-                "endpoint-policy-changed",
+                AuthSurfaceDiagnosticCode.EndpointPolicyChanged,
                 "named policies",
                 expected,
                 actual,
@@ -136,7 +136,7 @@ public static class AuthSurfaceVerifier
         if (!expected.Roles.SequenceEqual(actual.Roles, StringComparer.Ordinal))
         {
             yield return Change(
-                "endpoint-role-changed",
+                AuthSurfaceDiagnosticCode.EndpointRoleChanged,
                 "roles",
                 expected,
                 actual,
@@ -147,7 +147,7 @@ public static class AuthSurfaceVerifier
         if (!expected.AuthenticationSchemes.SequenceEqual(actual.AuthenticationSchemes, StringComparer.Ordinal))
         {
             yield return Change(
-                "endpoint-scheme-changed",
+                AuthSurfaceDiagnosticCode.EndpointSchemeChanged,
                 "authentication schemes",
                 expected,
                 actual,
@@ -158,7 +158,7 @@ public static class AuthSurfaceVerifier
         if (expected.UsesDefaultPolicy != actual.UsesDefaultPolicy)
         {
             yield return Change(
-                "endpoint-default-policy-changed",
+                AuthSurfaceDiagnosticCode.EndpointDefaultPolicyChanged,
                 "default-policy contribution",
                 expected,
                 actual,
@@ -169,7 +169,7 @@ public static class AuthSurfaceVerifier
         if (expected.UsesFallbackPolicy != actual.UsesFallbackPolicy)
         {
             yield return Change(
-                "endpoint-fallback-policy-changed",
+                AuthSurfaceDiagnosticCode.EndpointFallbackPolicyChanged,
                 "fallback-policy contribution",
                 expected,
                 actual,
@@ -181,7 +181,7 @@ public static class AuthSurfaceVerifier
             !expected.Requirements.SequenceEqual(actual.Requirements, StringComparer.Ordinal))
         {
             yield return Change(
-                "endpoint-requirement-changed",
+                AuthSurfaceDiagnosticCode.EndpointRequirementChanged,
                 "effective requirements",
                 expected,
                 actual,
@@ -191,7 +191,7 @@ public static class AuthSurfaceVerifier
     }
 
     private static AuthSurfaceViolation Change(
-        string code,
+        AuthSurfaceDiagnosticCode code,
         string label,
         AuthSurfaceEndpoint expected,
         AuthSurfaceEndpoint actual,

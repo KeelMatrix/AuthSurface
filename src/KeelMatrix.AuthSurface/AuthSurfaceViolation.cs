@@ -4,14 +4,14 @@ namespace KeelMatrix.AuthSurface;
 public sealed class AuthSurfaceViolation
 {
     internal AuthSurfaceViolation(
-        string code,
+        AuthSurfaceDiagnosticCode code,
         string message,
         string? route = null,
         string? method = null,
         string? expected = null,
         string? actual = null)
     {
-        Code = code;
+        Code = code.GetValue();
         Message = message;
         Route = route;
         Method = method;

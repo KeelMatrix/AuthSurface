@@ -59,7 +59,7 @@ public sealed class AuthSurfaceBaseline
             if (stream.Length > maximumBytes)
             {
                 throw new AuthSurfaceBaselineException(
-                    "baseline-too-large",
+                    AuthSurfaceDiagnosticCode.BaselineTooLarge,
                     $"The baseline exceeds the maximum size of {maximumBytes:N0} bytes.");
             }
 
@@ -79,7 +79,7 @@ public sealed class AuthSurfaceBaseline
             if (offset != bytes.Length || stream.ReadByte() >= 0)
             {
                 throw new AuthSurfaceBaselineException(
-                    "baseline-too-large",
+                    AuthSurfaceDiagnosticCode.BaselineTooLarge,
                     $"The baseline exceeds the maximum size of {maximumBytes:N0} bytes.");
             }
         }
@@ -90,7 +90,7 @@ public sealed class AuthSurfaceBaseline
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             throw new AuthSurfaceBaselineException(
-                "baseline-read-failed",
+                AuthSurfaceDiagnosticCode.BaselineReadFailed,
                 "The baseline could not be read.",
                 exception);
         }
@@ -112,10 +112,10 @@ public sealed class AuthSurfaceBaseline
         }
         catch (JsonException exception)
         {
-            string code = exception.Message.Contains("depth", StringComparison.OrdinalIgnoreCase)
-                ? "baseline-too-deep"
-                : "baseline-malformed";
-            string message = code == "baseline-too-deep"
+            AuthSurfaceDiagnosticCode code = exception.Message.Contains("depth", StringComparison.OrdinalIgnoreCase)
+                ? AuthSurfaceDiagnosticCode.BaselineTooDeep
+                : AuthSurfaceDiagnosticCode.BaselineMalformed;
+            string message = code == AuthSurfaceDiagnosticCode.BaselineTooDeep
                 ? "The baseline exceeds the supported JSON nesting depth."
                 : "The baseline is not valid JSON.";
             throw new AuthSurfaceBaselineException(code, message, exception);
@@ -133,24 +133,31 @@ public sealed class AuthSurfaceBaseline
         }
         catch (JsonException exception)
         {
-            throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline is not valid according to schema version 1.", exception);
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "The baseline is not valid according to schema version 1.",
+                exception);
         }
 
         if (document is null)
         {
-            throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline is empty or null.");
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "The baseline is empty or null.");
         }
 
         if (document.SchemaVersion != CurrentSchemaVersion)
         {
             throw new AuthSurfaceBaselineException(
-                "baseline-schema-unsupported",
+                AuthSurfaceDiagnosticCode.BaselineSchemaUnsupported,
                 $"The baseline schema version {document.SchemaVersion} is not supported; expected {CurrentSchemaVersion}.");
         }
 
         if (document.Endpoints is null || document.Endpoints.Count > 100_000)
         {
-            throw new AuthSurfaceBaselineException("baseline-endpoint-limit", "The baseline endpoint count is invalid or exceeds the supported bound.");
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineEndpointLimit,
+                "The baseline endpoint count is invalid or exceeds the supported bound.");
         }
 
         try
@@ -158,7 +165,9 @@ public sealed class AuthSurfaceBaseline
             var endpoints = document.Endpoints.Select(ToEndpoint).ToArray();
             if (endpoints.Select(static endpoint => endpoint.Identity).Distinct(StringComparer.Ordinal).Count() != endpoints.Length)
             {
-                throw new AuthSurfaceBaselineException("baseline-duplicate-identity", "The baseline contains duplicate canonical endpoint identities.");
+                throw new AuthSurfaceBaselineException(
+                    AuthSurfaceDiagnosticCode.BaselineDuplicateIdentity,
+                    "The baseline contains duplicate canonical endpoint identities.");
             }
 
             return new AuthSurfaceBaseline(endpoints);
@@ -169,7 +178,10 @@ public sealed class AuthSurfaceBaseline
         }
         catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
         {
-            throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline endpoint records are invalid.", exception);
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "The baseline endpoint records are invalid.",
+                exception);
         }
     }
 
@@ -283,7 +295,9 @@ public sealed class AuthSurfaceBaseline
 
         if (!hasNonWhitespace)
         {
-            throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline is empty or contains only whitespace.");
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "The baseline is empty or contains only whitespace.");
         }
 
         JsonReaderOptions options = new()
@@ -304,7 +318,9 @@ public sealed class AuthSurfaceBaseline
 
             if (!hasValue)
             {
-                throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline is empty or contains only whitespace.");
+                throw new AuthSurfaceBaselineException(
+                    AuthSurfaceDiagnosticCode.BaselineMalformed,
+                    "The baseline is empty or contains only whitespace.");
             }
         }
         catch (AuthSurfaceBaselineException)
@@ -314,7 +330,9 @@ public sealed class AuthSurfaceBaseline
         catch (JsonException exception)
         {
             bool truncated = IsAtEndOfPayload(bytes, exception);
-            string code = truncated ? "baseline-truncated" : "baseline-malformed";
+            AuthSurfaceDiagnosticCode code = truncated
+                ? AuthSurfaceDiagnosticCode.BaselineTruncated
+                : AuthSurfaceDiagnosticCode.BaselineMalformed;
             string message = truncated
                 ? "The baseline ends before its JSON document is complete."
                 : "The baseline is not valid JSON.";
@@ -329,7 +347,7 @@ public sealed class AuthSurfaceBaseline
             if (bytes[index] == 0xEF && bytes[index + 1] == 0xBB && bytes[index + 2] == 0xBF)
             {
                 throw new AuthSurfaceBaselineException(
-                    "baseline-malformed",
+                    AuthSurfaceDiagnosticCode.BaselineMalformed,
                     "The baseline contains a misplaced UTF-8 BOM.");
             }
         }
@@ -369,16 +387,22 @@ public sealed class AuthSurfaceBaseline
     {
         if (root.ValueKind != JsonValueKind.Object)
         {
-            throw new AuthSurfaceBaselineException("baseline-malformed", "The baseline root must be a JSON object.");
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "The baseline root must be a JSON object.");
         }
 
-        ValidateKnownFields(root, TopLevelFields, "baseline-unknown-field", "top-level");
+        ValidateKnownFields(
+            root,
+            TopLevelFields,
+            AuthSurfaceDiagnosticCode.BaselineUnknownField,
+            "top-level");
 
         if (root.TryGetProperty("schemaVersion", out JsonElement schemaVersion) &&
             (schemaVersion.ValueKind != JsonValueKind.Number || !schemaVersion.TryGetInt32(out _)))
         {
             throw new AuthSurfaceBaselineException(
-                "baseline-field-type",
+                AuthSurfaceDiagnosticCode.BaselineFieldType,
                 "The baseline field '$.schemaVersion' must be a JSON integer.");
         }
 
@@ -390,7 +414,7 @@ public sealed class AuthSurfaceBaseline
         if (endpoints.ValueKind != JsonValueKind.Array)
         {
             throw new AuthSurfaceBaselineException(
-                "baseline-field-type",
+                AuthSurfaceDiagnosticCode.BaselineFieldType,
                 "The baseline field '$.endpoints' must be a JSON array.");
         }
 
@@ -401,11 +425,15 @@ public sealed class AuthSurfaceBaseline
             if (endpoint.ValueKind != JsonValueKind.Object)
             {
                 throw new AuthSurfaceBaselineException(
-                    "baseline-field-type",
+                    AuthSurfaceDiagnosticCode.BaselineFieldType,
                     $"The baseline value '{path}' must be a JSON object.");
             }
 
-            ValidateKnownFields(endpoint, EndpointFields, "baseline-unknown-endpoint-field", path);
+            ValidateKnownFields(
+                endpoint,
+                EndpointFields,
+                AuthSurfaceDiagnosticCode.BaselineUnknownEndpointField,
+                path);
             ValidateEndpointFieldTypes(endpoint, path);
             index++;
         }
@@ -414,7 +442,7 @@ public sealed class AuthSurfaceBaseline
     private static void ValidateKnownFields(
         JsonElement value,
         HashSet<string> knownFields,
-        string errorCode,
+        AuthSurfaceDiagnosticCode errorCode,
         string scope)
     {
         HashSet<string> seenFields = new(StringComparer.Ordinal);
@@ -423,7 +451,7 @@ public sealed class AuthSurfaceBaseline
             if (!seenFields.Add(property.Name))
             {
                 throw new AuthSurfaceBaselineException(
-                    "baseline-duplicate-field",
+                    AuthSurfaceDiagnosticCode.BaselineDuplicateField,
                     $"The baseline field '{RenderDiagnosticPropertyName(property.Name)}' is duplicated at {scope}.");
             }
         }
@@ -469,7 +497,7 @@ public sealed class AuthSurfaceBaseline
         if (value.TryGetProperty(name, out JsonElement property) && property.ValueKind != JsonValueKind.String)
         {
             throw new AuthSurfaceBaselineException(
-                "baseline-field-type",
+                AuthSurfaceDiagnosticCode.BaselineFieldType,
                 $"The baseline field '{path}.{name}' must be a JSON string.");
         }
     }
@@ -484,7 +512,7 @@ public sealed class AuthSurfaceBaseline
         if (property.ValueKind != JsonValueKind.Array || property.EnumerateArray().Any(static item => item.ValueKind != JsonValueKind.String))
         {
             throw new AuthSurfaceBaselineException(
-                "baseline-field-type",
+                AuthSurfaceDiagnosticCode.BaselineFieldType,
                 $"The baseline field '{path}.{name}' must be a JSON array of strings.");
         }
     }
@@ -495,7 +523,7 @@ public sealed class AuthSurfaceBaseline
             property.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
         {
             throw new AuthSurfaceBaselineException(
-                "baseline-field-type",
+                AuthSurfaceDiagnosticCode.BaselineFieldType,
                 $"The baseline field '{path}.{name}' must be a JSON boolean.");
         }
     }
@@ -534,7 +562,9 @@ public sealed class AuthSurfaceBaseline
             string.IsNullOrWhiteSpace(document.RequirementFingerprint) || document.RequirementFingerprint.Length != 64 ||
             document.Policies is null || document.Roles is null || document.Schemes is null)
         {
-            throw new AuthSurfaceBaselineException("baseline-malformed", "A baseline endpoint record is incomplete.");
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "A baseline endpoint record is incomplete.");
         }
 
         if (document.Authorization is null ||
@@ -542,12 +572,16 @@ public sealed class AuthSurfaceBaseline
             !Enum.TryParse(document.Authorization, ignoreCase: false, out AuthSurfaceAuthorizationKind kind) ||
             !Enum.IsDefined(kind))
         {
-            throw new AuthSurfaceBaselineException("baseline-malformed", "A baseline endpoint has an unknown authorization classification.");
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "A baseline endpoint has an unknown authorization classification.");
         }
 
         if (document.RequirementFingerprint.Any(static character => !Uri.IsHexDigit(character)))
         {
-            throw new AuthSurfaceBaselineException("baseline-malformed", "A baseline endpoint has an invalid requirement fingerprint.");
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "A baseline endpoint has an invalid requirement fingerprint.");
         }
 
         // The serialized requirement array is already the framework-produced sequence. Read it

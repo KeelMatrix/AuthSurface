@@ -18,9 +18,45 @@ The package intentionally exposes no test-framework adapters, handler execution 
 
 Baseline schema version 1 remains unchanged because its requirement array already stores an ordered sequence. This is a pre-release contract clarification. A schema-version-1 baseline produced by an earlier build may need regeneration when its requirement array reflects the former sorted order; schema-version-1 readers preserve the order stored in the file.
 
+## Diagnostic code contract
+
+The following table is the complete stable code set that the shipping assembly can emit through `AuthSurfaceViolation.Code`, `AuthSurfaceAnalysisException.Code`, or `AuthSurfaceBaselineException.Code`. It does not include human-readable message text or the `Expected`/`Actual` values attached to violations.
+
+<!-- BEGIN:DIAGNOSTIC-CODES -->
+| Code | Emission surface |
+| --- | --- |
+| `baseline-duplicate-field` | `AuthSurfaceBaselineException` |
+| `baseline-duplicate-identity` | `AuthSurfaceBaselineException` |
+| `baseline-endpoint-limit` | `AuthSurfaceBaselineException` |
+| `baseline-field-type` | `AuthSurfaceBaselineException` |
+| `baseline-malformed` | `AuthSurfaceBaselineException` |
+| `baseline-read-failed` | `AuthSurfaceBaselineException` |
+| `baseline-schema-unsupported` | `AuthSurfaceBaselineException` |
+| `baseline-too-deep` | `AuthSurfaceBaselineException` |
+| `baseline-too-large` | `AuthSurfaceBaselineException` |
+| `baseline-truncated` | `AuthSurfaceBaselineException` |
+| `baseline-unknown-endpoint-field` | `AuthSurfaceBaselineException` |
+| `baseline-unknown-field` | `AuthSurfaceBaselineException` |
+| `duplicate-endpoint-identity` | `AuthSurfaceAnalysisException` |
+| `endpoint-added` | `AuthSurfaceViolation` |
+| `endpoint-classification-changed` | `AuthSurfaceViolation` |
+| `endpoint-default-policy-changed` | `AuthSurfaceViolation` |
+| `endpoint-fallback-policy-changed` | `AuthSurfaceViolation` |
+| `endpoint-policy-changed` | `AuthSurfaceViolation` |
+| `endpoint-removed` | `AuthSurfaceViolation` |
+| `endpoint-requirement-changed` | `AuthSurfaceViolation` |
+| `endpoint-role-changed` | `AuthSurfaceViolation` |
+| `endpoint-route-changed` | `AuthSurfaceViolation` |
+| `endpoint-scheme-changed` | `AuthSurfaceViolation` |
+| `fallback-policy-endpoint` | `AuthSurfaceViolation` |
+| `policy-resolution-failed` | `AuthSurfaceAnalysisException` |
+| `unprotected-endpoint` | `AuthSurfaceViolation` |
+| `unsupported-parameter-policy` | `AuthSurfaceAnalysisException` |
+<!-- END:DIAGNOSTIC-CODES -->
+
 ## Human-readable diff examples
 
-`AuthSurfaceVerifier` returns the following stable codes and message shapes:
+The examples below show five common `AuthSurfaceVerifier` messages; the table above, not this example subset, defines the complete code set.
 
 ```text
 endpoint-added

@@ -63,23 +63,41 @@ The four classifications are:
 
 ## Troubleshooting
 
+This table is the complete stable code set emitted by the shipping assembly. `AuthSurfaceViolation.Code`, `AuthSurfaceAnalysisException.Code`, and `AuthSurfaceBaselineException.Code` all use this inventory.
+
+<!-- BEGIN:DIAGNOSTIC-CODES -->
 | Code | Meaning | What to do |
 | --- | --- | --- |
 | `baseline-duplicate-field` | A property name appears more than once in one JSON object. The message names the property and identifies the top level or the endpoint entry (`$.endpoints[index]`). | Remove the duplicate property and keep the value that matches the intended schema. |
 | `baseline-duplicate-identity` | Two endpoint records normalize to the same route and HTTP method identity. | Remove the duplicate record or correct its route/method before regenerating the baseline. |
 | `baseline-endpoint-limit` | The baseline endpoint list is missing or exceeds the supported 100,000-record bound. | Reduce the baseline to the intended endpoint set and regenerate it from a bounded scan. |
-| `baseline-truncated` | The document ends in the middle of a JSON structure, such as an object, array, string, or escape sequence. | Restore the missing bytes or regenerate the baseline from a trusted scan. |
-| `baseline-malformed` | The file is empty, whitespace-only, has a syntax error, contains an invalid BOM placement, or is otherwise not valid JSON for schema version 1. | Fix the JSON syntax or regenerate the baseline; a malformed file is never rewritten. |
-| `baseline-too-deep` | A complete JSON document exceeds the supported nesting depth. This is distinct from `baseline-truncated`, which means the document ends before its structure is complete. | Remove unexpected nesting and regenerate the baseline if the content is intentional. |
-| `baseline-unknown-field` | An unrecognized property appears at the top level. | Remove the property or migrate the file to the supported schema. |
-| `baseline-unknown-endpoint-field` | An unrecognized property appears in an endpoint entry. | Remove the property or migrate the file to the supported schema. |
 | `baseline-field-type` | A known property has the wrong JSON type, such as a string where an array or boolean is required. | Change the value to the type required by schema version 1. |
-| `baseline-schema-unsupported` | The file declares a schema version other than the supported version 1. | Migrate the file explicitly to schema version 1; AuthSurface does not downgrade it automatically. |
-| `baseline-too-large` | The file exceeds the default 1 MiB input limit (or the limit supplied to `Read`). | Reduce the baseline size or provide an intentional, bounded maximum appropriate for the application. |
+| `baseline-malformed` | The file is empty, whitespace-only, has a syntax error, contains an invalid BOM placement, or is otherwise not valid JSON for schema version 1. | Fix the JSON syntax or regenerate the baseline; a malformed file is never rewritten. |
 | `baseline-read-failed` | The baseline could not be opened or read because of an I/O or access failure. | Check that the path exists and that the process has permission to read the file, then retry. |
+| `baseline-schema-unsupported` | The file declares a schema version other than the supported version 1. | Migrate the file explicitly to schema version 1; AuthSurface does not downgrade it automatically. |
+| `baseline-too-deep` | A complete JSON document exceeds the supported nesting depth. This is distinct from `baseline-truncated`, which means the document ends before its structure is complete. | Remove unexpected nesting and regenerate the baseline if the content is intentional. |
+| `baseline-too-large` | The file exceeds the default 1 MiB input limit (or the limit supplied to `Read`). | Reduce the baseline size or provide an intentional, bounded maximum appropriate for the application. |
+| `baseline-truncated` | The document ends in the middle of a JSON structure, such as an object, array, string, or escape sequence. | Restore the missing bytes or regenerate the baseline from a trusted scan. |
+| `baseline-unknown-endpoint-field` | An unrecognized property appears in an endpoint entry. | Remove the property or migrate the file to the supported schema. |
+| `baseline-unknown-field` | An unrecognized property appears at the top level. | Remove the property or migrate the file to the supported schema. |
+| `duplicate-endpoint-identity` | Two runtime endpoints normalize to the same route and HTTP method identity. | Disambiguate the routes or explicitly exclude the intended infrastructure endpoint. |
+| `endpoint-added` | A current endpoint has no matching baseline entry. | Review the endpoint, then deliberately update the accepted baseline if the addition is intended. |
+| `endpoint-classification-changed` | An endpoint changed among the four authorization classifications. | Review its runtime authorization metadata and accept only an intentional posture change. |
+| `endpoint-default-policy-changed` | The default-policy contribution flag changed. | Review the endpoint metadata and application default policy. |
+| `endpoint-fallback-policy-changed` | The fallback-policy contribution flag changed. | Review the application fallback policy and the endpoint's explicit metadata. |
+| `endpoint-policy-changed` | The exact named-policy sequence changed. | Review the named policies and dynamic policy-provider result. |
+| `endpoint-removed` | A baseline endpoint has no matching current endpoint. | Confirm the route was intentionally removed, then update the baseline. |
+| `endpoint-requirement-changed` | Canonical effective requirements or their fingerprint changed. | Review the effective authorization-policy requirements before accepting the new baseline. |
+| `endpoint-role-changed` | The canonical role set changed. | Review role metadata and policy requirements before accepting the change. |
+| `endpoint-route-changed` | The readable normalized route changed for the same canonical identity. | Review the route spelling/casing and update the baseline only when intentional. |
+| `endpoint-scheme-changed` | The canonical authentication-scheme set changed. | Review endpoint and policy scheme metadata before accepting the change. |
+| `fallback-policy-endpoint` | Strict mode found an endpoint protected only by the fallback policy. | Add endpoint-level authorization metadata or disable strict fallback enforcement when fallback reliance is intentional. |
+| `policy-resolution-failed` | The application's policy provider could not resolve the endpoint's authorization metadata. | Register a resolvable policy provider and scan the completed host again. |
+| `unprotected-endpoint` | An endpoint is neither explicitly anonymous nor protected by an effective policy. | Add authorization, mark it explicitly anonymous, or explicitly exclude it. |
 | `unsupported-parameter-policy` | A programmatic route parameter policy has no stable representation supported by AuthSurface. | Use a parsed route constraint, a supported framework constraint, or explicitly exclude the endpoint. |
+<!-- END:DIAGNOSTIC-CODES -->
 
-For all diagnostics, inspect the `Code` and message on `AuthSurfaceBaselineException`. The original file remains byte-for-byte unchanged on failure.
+For baseline diagnostics, inspect the `Code` and message on `AuthSurfaceBaselineException`; the original file remains byte-for-byte unchanged on failure. Analysis failures use `AuthSurfaceAnalysisException`, while policy and comparison findings use `AuthSurfaceViolation`.
 
 An endpoint entry requires `route`, exactly one `methods` value, one of the four exact authorization names, `policies`, `roles`, `schemes`, `requirements`, and a 64-character hexadecimal `requirementFingerprint`. `usesDefaultPolicy` and `usesFallbackPolicy` are supported boolean fields and default to `false` when omitted. Schema version 1 is strict about unknown fields and classification names; future schema versions require an explicit migration rather than silent reinterpretation. Under SemVer, a future incompatible baseline representation requires a new schema version and documented migration behavior.
 
