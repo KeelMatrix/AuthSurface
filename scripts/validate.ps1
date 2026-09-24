@@ -80,7 +80,7 @@ try {
     Invoke-Gate 'stale-cache package consumer regression' { & (Join-Path $PSScriptRoot 'test-consumer-smoke.ps1') -PackagePath $nupkg.FullName }
     Invoke-Gate 'vulnerability gate negative test' { & (Join-Path $PSScriptRoot 'test-vulnerability-gate.ps1') }
 
-    $forbiddenPattern = 'Paper' + 'clip|Cod' + 'ex|KEE-' + '[0-9]+'
+    $forbiddenPattern = '(?i)Paper' + 'clip|Cod' + 'ex|KEE-' + '[0-9]+|Fron' + 'tier|acceptance[- ]' + 'delta|orches' + 'trat|Task Delegator|frontier review|frontier regression|review findings|review gaps|previous matrix|false/incomplete'
     $validatorPath = 'scripts/validate.ps1'
     $rgPath = Get-Command rg -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1 -ExpandProperty Source
@@ -103,7 +103,15 @@ try {
         $leaks | Write-Output
         throw 'Internal wording was found in product files.'
     }
-    Write-Host 'telemetry suppression/privacy checks: passed (suppression variables set; prohibited internal wording absent)'
+
+    $history = @(git -C $root log HEAD --format='%H%x09%s')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect candidate commit history.' }
+    $historyLeaks = @($history | Select-String -Pattern $forbiddenPattern)
+    if ($historyLeaks.Count -gt 0) {
+        $historyLeaks | Write-Output
+        throw 'Internal wording was found in candidate commit history.'
+    }
+    Write-Host 'telemetry suppression/privacy checks: passed (suppression variables set; tracked text and candidate commit history are free of prohibited internal wording)'
 }
 finally {
     Pop-Location

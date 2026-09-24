@@ -90,7 +90,6 @@ AuthSurface targets `net8.0` only. It records runtime authorization metadata and
 ## Documentation
 
 - [API reference](docs/api-reference.md)
-- [Acceptance delta](docs/acceptance-delta.md)
 - [Endpoint identity](docs/endpoint-identity.md)
 - [Privacy](PRIVACY.md)
 - [Developer guide](AGENTS.md)

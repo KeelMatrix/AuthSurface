@@ -69,7 +69,7 @@ Assert-Rejected 'unpinned action' {
     param($testRoot)
     $ciPath = Join-Path $testRoot '.github/workflows/ci.yml'
     $ci = Get-Content -LiteralPath $ciPath -Raw
-    $ci = $ci.Replace('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683', 'actions/checkout@main')
+    $ci = $ci.Replace('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/checkout@main')
     Set-Content -LiteralPath $ciPath -Value $ci -Encoding utf8
 }
 
@@ -77,7 +77,7 @@ Assert-Rejected 'tag action reference' {
     param($testRoot)
     $ciPath = Join-Path $testRoot '.github/workflows/ci.yml'
     $ci = Get-Content -LiteralPath $ciPath -Raw
-    $ci = $ci.Replace('actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9', 'actions/setup-dotnet@v4')
+    $ci = $ci.Replace('actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68', 'actions/setup-dotnet@v4')
     Set-Content -LiteralPath $ciPath -Value $ci -Encoding utf8
 }
 
@@ -97,8 +97,21 @@ Assert-Rejected 'workflow action missing from allowlist' {
     param($testRoot)
     $ciPath = Join-Path $testRoot '.github/workflows/ci.yml'
     $ci = Get-Content -LiteralPath $ciPath -Raw
-    $ci = $ci.Replace('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683', 'actions/checkout@67a3573c9a986a3f9c594539f4ab511d57bb3ce9')
+    $ci = $ci.Replace('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/checkout@a98b56852c35b8e3190ac28c8c2271da59106c68')
     Set-Content -LiteralPath $ciPath -Value $ci -Encoding utf8
 }
 
-Write-Output 'Workflow validator mutation tests passed: real workflows, operational single-push/exit-code checks, publication failure control, unpinned action, tag reference, annotated tag object SHA, and missing allowlist entry.'
+Assert-Rejected 'correctly pinned deprecated JavaScript runtime' {
+    param($testRoot)
+    $currentCheckout = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+    $deprecatedCheckout = 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
+    Get-ChildItem -LiteralPath (Join-Path $testRoot '.github/workflows') -File | ForEach-Object {
+        $workflow = Get-Content -LiteralPath $_.FullName -Raw
+        Set-Content -LiteralPath $_.FullName -Value $workflow.Replace($currentCheckout, $deprecatedCheckout) -Encoding utf8
+    }
+    $allowlistPath = Join-Path $testRoot 'scripts/release-action-pins.txt'
+    $allowlist = Get-Content -LiteralPath $allowlistPath -Raw
+    Set-Content -LiteralPath $allowlistPath -Value $allowlist.Replace($currentCheckout, $deprecatedCheckout) -Encoding utf8
+}
+
+Write-Output 'Workflow validator mutation tests passed: real workflows, operational single-push/exit-code checks, publication failure control, unpinned action, tag reference, annotated tag object SHA, missing allowlist entry, and deprecated JavaScript runtime.'

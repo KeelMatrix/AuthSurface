@@ -1,4 +1,5 @@
 using AuthSurface.FixtureApp;
+using System.Globalization;
 using KeelMatrix.AuthSurface;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -126,19 +127,40 @@ public sealed class IdentityContractTests
     }
 
     [Fact]
-    public async Task SupportedProgrammaticParameterPolicyRoundTripsToStableRouteIdentity()
+    public async Task SupportedProgrammaticParameterPoliciesRoundTripThroughPersistedBaseline()
     {
-        RoutePattern pattern = ProgrammaticPattern(new IntRouteConstraint());
-        var source = new DefaultEndpointDataSource([BuildEndpoint(pattern)]);
-        AuthSurfaceReport report = await new AuthSurfaceScanner(
-            [source],
-            new AllowingPolicyProvider()).ScanAsync();
+        using var directory = new TemporaryDirectory();
+        var renderedRoutes = new List<string>();
 
-        AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
-        Assert.Equal("/items/{id:int}", endpoint.Route);
+        foreach (AuthSurfaceParameterPolicyContract contract in AuthSurfaceParameterPolicyMatrix.Contracts)
+        {
+            foreach (Func<IParameterPolicy> variant in contract.Variants)
+            {
+                RoutePattern pattern = ProgrammaticPattern(variant());
+                var source = new DefaultEndpointDataSource([BuildEndpoint(pattern)]);
+                AuthSurfaceReport report = await new AuthSurfaceScanner(
+                    [source],
+                    new AllowingPolicyProvider()).ScanAsync();
 
-        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Create(report);
-        Assert.Equal(endpoint.Route, Assert.Single(baseline.Endpoints).Route);
+                AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+                renderedRoutes.Add(endpoint.Route);
+                string path = Path.Combine(
+                    directory.Path,
+                    contract.RuntimeType.Name,
+                    renderedRoutes.Count.ToString(CultureInfo.InvariantCulture));
+                AuthSurfaceBaseline.Create(report, path, overwrite: false);
+                AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+                AuthSurfaceEndpoint persisted = Assert.Single(roundTrip.Endpoints);
+
+                Assert.Equal(endpoint.Route, persisted.Route);
+                Assert.Equal(endpoint.Identity, persisted.Identity);
+                Assert.Equal(endpoint.Requirements, persisted.Requirements);
+                Assert.Equal(endpoint.RequirementFingerprint, persisted.RequirementFingerprint);
+                Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid);
+            }
+        }
+
+        Assert.Equal(renderedRoutes.Count, renderedRoutes.Distinct(StringComparer.Ordinal).Count());
     }
 
     [Fact]
@@ -153,6 +175,19 @@ public sealed class IdentityContractTests
         Assert.Equal("unsupported-parameter-policy", exception.Code);
         Assert.Contains("id", exception.Message, StringComparison.Ordinal);
         Assert.Contains(nameof(UnsupportedParameterPolicy), exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UnsupportedNestedProgrammaticParameterPolicyFailsClosed()
+    {
+        RoutePattern pattern = ProgrammaticPattern(new CompositeRouteConstraint([new UnsupportedRouteConstraint()]));
+        var source = new DefaultEndpointDataSource([BuildEndpoint(pattern)]);
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner([source], new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("unsupported-parameter-policy", exception.Code);
+        Assert.Contains(nameof(UnsupportedRouteConstraint), exception.Message, StringComparison.Ordinal);
     }
 
     private static RoutePattern ProgrammaticPattern(IParameterPolicy policy) =>
@@ -208,6 +243,29 @@ public sealed class IdentityContractTests
 
     private sealed class UnsupportedParameterPolicy : IParameterPolicy
     {
+    }
+
+    private sealed class UnsupportedRouteConstraint : IRouteConstraint
+    {
+        public bool Match(
+            Microsoft.AspNetCore.Http.HttpContext? httpContext,
+            Microsoft.AspNetCore.Routing.IRouter? route,
+            string routeKey,
+            RouteValueDictionary values,
+            RouteDirection routeDirection) => true;
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public TemporaryDirectory()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "authsurface-parameter-policy-tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose() => Directory.Delete(Path, recursive: true);
     }
 }
 #pragma warning restore ASP0022

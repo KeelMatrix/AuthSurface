@@ -48,34 +48,9 @@ public sealed class DocumentationContractTests
                 static match => match.Groups["identity"].Value,
                 StringComparer.Ordinal);
 
-        IParameterPolicy[] supportedPolicies =
-        [
-            new AlphaRouteConstraint(),
-            new BoolRouteConstraint(),
-            new CompositeRouteConstraint([new IntRouteConstraint(), new MinRouteConstraint(2)]),
-            new DateTimeRouteConstraint(),
-            new DecimalRouteConstraint(),
-            new DoubleRouteConstraint(),
-            new FileNameRouteConstraint(),
-            new FloatRouteConstraint(),
-            new GuidRouteConstraint(),
-            new HttpMethodRouteConstraint(["POST", "GET"]),
-            new IntRouteConstraint(),
-            new LengthRouteConstraint(3, 12),
-            new LongRouteConstraint(),
-            new MaxLengthRouteConstraint(12),
-            new MaxRouteConstraint(9),
-            new MinLengthRouteConstraint(3),
-            new MinRouteConstraint(2),
-            new NonFileNameRouteConstraint(),
-            new OptionalRouteConstraint(new IntRouteConstraint()),
-            new RangeRouteConstraint(2, 9),
-            new RegexRouteConstraint(new Regex("^\\d+$", RegexOptions.None)),
-            new RequiredRouteConstraint(),
-        ];
-        Dictionary<string, string> shipped = supportedPolicies.ToDictionary(
-            static policy => policy.GetType().Name,
-            static policy => RenderProgrammaticPolicy(policy),
+        Dictionary<string, string> shipped = AuthSurfaceParameterPolicyMatrix.Contracts.ToDictionary(
+            static contract => contract.RuntimeType.Name,
+            contract => RenderProgrammaticPolicy(contract.PrimaryVariant()),
             StringComparer.Ordinal);
 
         Assert.Equal(
@@ -89,6 +64,57 @@ public sealed class DocumentationContractTests
         Assert.Contains($"`{unsupportedCode}`", documentation, StringComparison.Ordinal);
         Assert.Contains("fails closed", documentation, StringComparison.Ordinal);
         Assert.Contains("not omitted", documentation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DocumentedDiagnosticExamplesMatchVerifierOutput()
+    {
+        string root = FindRepositoryRoot();
+        string[] documentation =
+        [
+            File.ReadAllText(Path.Combine(root, "docs", "api-reference.md")),
+            File.ReadAllText(Path.Combine(root, "src", "KeelMatrix.AuthSurface", "README.md")),
+        ];
+
+        AuthSurfaceEndpoint expected = Endpoint(
+            "/secure",
+            AuthSurfaceAuthorizationKind.ExplicitProtected,
+            ["Read"],
+            ["requirement"]);
+        AuthSurfaceEndpoint actual = Endpoint(
+            "/secure",
+            AuthSurfaceAuthorizationKind.ExplicitAnonymous,
+            ["Write"],
+            ["changed"],
+            usesDefaultPolicy: false);
+
+        AuthSurfaceVerificationResult changes = AuthSurfaceVerifier.Compare(
+            new AuthSurfaceReport([actual], []),
+            AuthSurfaceBaseline.Create(new AuthSurfaceReport([expected], [])));
+        string added = Assert.Single(
+            AuthSurfaceVerifier.Compare(
+                new AuthSurfaceReport([Endpoint("/internal/export", AuthSurfaceAuthorizationKind.ExplicitProtected)], []),
+                AuthSurfaceBaseline.Create(new AuthSurfaceReport([], []))).Violations
+                .Where(static violation => violation.Code == "endpoint-added")).Message;
+        string removed = Assert.Single(
+            AuthSurfaceVerifier.Compare(
+                new AuthSurfaceReport([], []),
+                AuthSurfaceBaseline.Create(new AuthSurfaceReport([Endpoint("/internal/export", AuthSurfaceAuthorizationKind.ExplicitProtected)], []))).Violations
+                .Where(static violation => violation.Code == "endpoint-removed")).Message;
+
+        string[] messages =
+        [
+            added,
+            removed,
+            Assert.Single(changes.Violations.Where(static violation => violation.Code == "endpoint-classification-changed")).Message,
+            Assert.Single(changes.Violations.Where(static violation => violation.Code == "endpoint-policy-changed")).Message,
+            Assert.Single(changes.Violations.Where(static violation => violation.Code == "endpoint-requirement-changed")).Message,
+        ];
+
+        foreach (string message in messages)
+        {
+            Assert.All(documentation, document => Assert.Contains(message, document, StringComparison.Ordinal));
+        }
     }
 
     private static string[] ExtractDiagnosticCodeInventory(string documentation)
@@ -114,6 +140,28 @@ public sealed class DocumentationContractTests
         Assert.StartsWith(prefix, route, StringComparison.Ordinal);
         Assert.EndsWith("}", route, StringComparison.Ordinal);
         return route[prefix.Length..^1];
+    }
+
+    private static AuthSurfaceEndpoint Endpoint(
+        string route,
+        AuthSurfaceAuthorizationKind kind,
+        string[]? policies = null,
+        string[]? requirements = null,
+        bool usesDefaultPolicy = true)
+    {
+        policies ??= ["Read"];
+        requirements ??= ["permission|read"];
+        return new AuthSurfaceEndpoint(
+            route,
+            "GET",
+            kind,
+            policies,
+            [],
+            ["Bearer"],
+            usesDefaultPolicy,
+            usesFallbackPolicy: false,
+            requirements,
+            AuthSurfaceCanonicalizer.Fingerprint(requirements));
     }
 
     private static RoutePattern ProgrammaticPattern(IParameterPolicy policy) =>

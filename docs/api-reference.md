@@ -74,5 +74,5 @@ endpoint-policy-changed
 Endpoint '/secure' [GET] named policies changed from ["Read"] to ["Write"].
 
 endpoint-requirement-changed
-Endpoint '/secure' [GET] effective requirements changed from requirements=["requirement"]; fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa to requirements=["changed"]; fingerprint=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.
+Endpoint '/secure' [GET] effective requirements changed from requirements=["requirement"]; fingerprint=79a5e127308a5a9cf7b4b805b8c675f2b6a8de8f55652be79846d74d5b6a892a to requirements=["changed"]; fingerprint=14ad2100f312362285a276d6d800d93c25a379f6e1fc6da5b34484a965c07f53.
 ```

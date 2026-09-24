@@ -11,7 +11,7 @@ using Xunit;
 
 namespace KeelMatrix.AuthSurface.Tests;
 
-public sealed class FrontierRegressionTests
+public sealed class AuthorizationRegressionTests
 {
     [Fact]
     public async Task RealAuthorizationPolicyValuesAreLosslessThroughBaselineComparison()
@@ -607,6 +607,66 @@ public sealed class FrontierRegressionTests
     }
 
     [Fact]
+    public async Task RealHostBaselineChangeMatrixCoversRuntimeSurfaceDiffs()
+    {
+        static void AddEquivalentPolicyProvider(IServiceCollection services) =>
+            services.AddSingleton<IAuthorizationPolicyProvider, EquivalentPolicyProvider>();
+
+        await using WebApplication baselineApp = BuildApplication(
+            application =>
+            {
+                application.MapGet("/removed", () => Results.Ok()).RequireAuthorization();
+                application.MapGet("/classification", () => Results.Ok()).RequireAuthorization();
+                application.MapGet("/policy", () => Results.Ok()).RequireAuthorization("PolicyA");
+                application.MapGet("/role", () => Results.Ok())
+                    .WithMetadata(new AuthorizeAttribute { Roles = "Admin" });
+                application.MapGet("/scheme", () => Results.Ok())
+                    .WithMetadata(new AuthorizeAttribute { AuthenticationSchemes = "Bearer" });
+                application.MapGet("/requirements", () => Results.Ok())
+                    .WithMetadata(new ClaimRequirementData("read"));
+                application.MapGet("/default", () => Results.Ok()).RequireAuthorization();
+                application.MapGet("/fallback", () => Results.Ok());
+            },
+            fallbackPolicy: true,
+            configureServices: AddEquivalentPolicyProvider);
+        await baselineApp.StartAsync();
+        AuthSurfaceReport baselineReport = await new AuthSurfaceScanner(baselineApp.Services).ScanAsync();
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Create(baselineReport);
+
+        await using WebApplication changedApp = BuildApplication(
+            application =>
+            {
+                application.MapGet("/added", () => Results.Ok()).RequireAuthorization();
+                application.MapGet("/classification", () => Results.Ok()).AllowAnonymous();
+                application.MapGet("/policy", () => Results.Ok()).RequireAuthorization("PolicyB");
+                application.MapGet("/role", () => Results.Ok())
+                    .WithMetadata(new AuthorizeAttribute { Roles = "Manager" });
+                application.MapGet("/scheme", () => Results.Ok())
+                    .WithMetadata(new AuthorizeAttribute { AuthenticationSchemes = "Cookies" });
+                application.MapGet("/requirements", () => Results.Ok())
+                    .WithMetadata(new ClaimRequirementData("write"));
+                application.MapGet("/default", () => Results.Ok())
+                    .WithMetadata(new AuthorizeAttribute { Roles = "Reader" });
+                application.MapGet("/fallback", () => Results.Ok());
+            },
+            fallbackPolicy: false,
+            configureServices: AddEquivalentPolicyProvider);
+        await changedApp.StartAsync();
+        AuthSurfaceReport changedReport = await new AuthSurfaceScanner(changedApp.Services).ScanAsync();
+        AuthSurfaceVerificationResult result = AuthSurfaceVerifier.Compare(changedReport, baseline);
+
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-added" && item.Route == "/added");
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-removed" && item.Route == "/removed");
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-classification-changed" && item.Route == "/classification");
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-policy-changed" && item.Route == "/policy");
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-role-changed" && item.Route == "/role");
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-scheme-changed" && item.Route == "/scheme");
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-requirement-changed" && item.Route == "/requirements");
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-default-policy-changed" && item.Route == "/default");
+        Assert.Contains(result.Violations, item => item.Code == "endpoint-fallback-policy-changed" && item.Route == "/fallback");
+    }
+
+    [Fact]
     public async Task PublicCollectionsAndBaselineCopiesCannotBeMutatedThroughCasts()
     {
         await using WebApplication app = BuildApplication(application =>
@@ -672,7 +732,7 @@ public sealed class FrontierRegressionTests
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
-            ApplicationName = typeof(FrontierRegressionTests).Assembly.GetName().Name,
+            ApplicationName = typeof(AuthorizationRegressionTests).Assembly.GetName().Name,
             EnvironmentName = Environments.Development,
         });
         builder.Services.AddAuthorization(options =>

@@ -191,8 +191,61 @@ function Assert-CommitObject([string] $Action) {
     }
 }
 
-foreach ($action in $workflowActions) {
-    Assert-CommitObject $action
+ $actionMetadataCache = @{}
+function Get-ActionMetadata([string] $Action) {
+    if ($actionMetadataCache.ContainsKey($Action)) {
+        return $actionMetadataCache[$Action]
+    }
+
+    $parts = $Action.Split('@', 2)
+    $repository = $parts[0]
+    $sha = $parts[1]
+    $metadata = $null
+    foreach ($metadataFile in @('action.yml', 'action.yaml')) {
+        $uri = "https://raw.githubusercontent.com/$repository/$sha/$metadataFile"
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $uri
+            if ($response.StatusCode -eq 200) {
+                $metadata = $response.Content
+                break
+            }
+        }
+        catch {
+            if ($metadataFile -eq 'action.yaml') {
+                throw "Could not read pinned action metadata for $Action."
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($metadata)) {
+        throw "Pinned action metadata is missing for $Action."
+    }
+
+    $actionMetadataCache[$Action] = $metadata
+    return $metadata
 }
 
-Write-Output "Workflow action pin contract passed: $($workflowPaths.Count) workflow files, $($workflowActions.Count) unique actions; every pin resolves to a commit object."
+function Assert-SupportedActionRuntime([string] $Action) {
+    $metadata = Get-ActionMetadata $Action
+    $usingMatch = [regex]::Match(
+        $metadata,
+        '(?im)^[ \t]*using:[ \t]*[\x27\x22]?(?<runtime>node\d+|composite|docker)[\x27\x22]?[ \t]*(?:#.*)?\r?$')
+    if (-not $usingMatch.Success) {
+        throw "Pinned action metadata does not declare a supported runtime: $Action."
+    }
+
+    $runtime = $usingMatch.Groups['runtime'].Value.ToLowerInvariant()
+    if ($runtime -like 'node*') {
+        $version = [int]$runtime.Substring(4)
+        if ($version -lt 24) {
+            throw "Pinned JavaScript action uses deprecated $runtime runtime; Node 24 or newer is required: $Action."
+        }
+    }
+}
+
+foreach ($action in $workflowActions) {
+    Assert-CommitObject $action
+    Assert-SupportedActionRuntime $action
+}
+
+Write-Output "Workflow action pin contract passed: $($workflowPaths.Count) workflow files, $($workflowActions.Count) unique actions; every pin resolves to a commit object and meets the Node runtime floor."

@@ -29,11 +29,11 @@ gh api repos/NuGet/login/git/tags/ebc737b6fc418a6ca0073cf116ec8dc156d8b81e --jq 
 gh api repos/NuGet/login/git/commits/8d196754b4036150537f80ac539e15c2f1028841 --jq '{sha: .sha, url: .url}'
 {"sha":"8d196754b4036150537f80ac539e15c2f1028841","url":"https://api.github.com/repos/NuGet/login/git/commits/8d196754b4036150537f80ac539e15c2f1028841"}
 
-gh api repos/actions/checkout/git/commits/11bd71901bbe5b1630ceea73d27597364c9af683 --jq '{sha: .sha, url: .url}'
-{"sha":"11bd71901bbe5b1630ceea73d27597364c9af683","url":"https://api.github.com/repos/actions/checkout/git/commits/11bd71901bbe5b1630ceea73d27597364c9af683"}
+gh api repos/actions/checkout/git/commits/3d3c42e5aac5ba805825da76410c181273ba90b1 --jq '{sha: .sha, url: .url}'
+{"sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","url":"https://api.github.com/repos/actions/checkout/git/commits/3d3c42e5aac5ba805825da76410c181273ba90b1"}
 
-gh api repos/actions/setup-dotnet/git/commits/67a3573c9a986a3f9c594539f4ab511d57bb3ce9 --jq '{sha: .sha, url: .url}'
-{"sha":"67a3573c9a986a3f9c594539f4ab511d57bb3ce9","url":"https://api.github.com/repos/actions/setup-dotnet/git/commits/67a3573c9a986a3f9c594539f4ab511d57bb3ce9"}
+gh api repos/actions/setup-dotnet/git/commits/a98b56852c35b8e3190ac28c8c2271da59106c68 --jq '{sha: .sha, url: .url}'
+{"sha":"a98b56852c35b8e3190ac28c8c2271da59106c68","url":"https://api.github.com/repos/actions/setup-dotnet/git/commits/a98b56852c35b8e3190ac28c8c2271da59106c68"}
 ```
 
 Run the real-workflow check and its negative mutation coverage from the
