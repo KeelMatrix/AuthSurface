@@ -5,7 +5,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.AspNetCore.Routing.Constraints;
 using Microsoft.AspNetCore.Routing.Patterns;
 
 namespace KeelMatrix.AuthSurface;
@@ -92,7 +91,7 @@ internal static class AuthSurfaceCanonicalizer
         ArgumentNullException.ThrowIfNull(method);
 
         RoutePattern pattern = RoutePatternFactory.Parse(route);
-        return RenderPattern(pattern, caseFoldRouteComponents: true) + "\u001f" + method.ToUpperInvariant();
+        return RenderPattern(pattern, caseFoldRouteComponents: true, canonicalizePolicies: true) + "\u001f" + method.ToUpperInvariant();
     }
 
     internal static string Fingerprint(IEnumerable<string> requirements)
@@ -131,7 +130,10 @@ internal static class AuthSurfaceCanonicalizer
             string.Concat(valuesArray.Select(EncodeValue)) + "]";
     }
 
-    private static string RenderPattern(RoutePattern pattern, bool caseFoldRouteComponents = false)
+    private static string RenderPattern(
+        RoutePattern pattern,
+        bool caseFoldRouteComponents = false,
+        bool canonicalizePolicies = false)
     {
         var builder = new StringBuilder();
         foreach (RoutePatternPathSegment segment in pattern.PathSegments)
@@ -157,7 +159,7 @@ internal static class AuthSurfaceCanonicalizer
                         builder.Append(caseFoldRouteComponents ? parameter.Name.ToUpperInvariant() : parameter.Name);
                         foreach (RoutePatternParameterPolicyReference policy in parameter.ParameterPolicies)
                         {
-                            builder.Append(':').Append(RenderParameterPolicy(policy, parameter.Name));
+                            builder.Append(':').Append(RenderParameterPolicy(policy, parameter.Name, canonicalizePolicies));
                         }
 
                         if (parameter.Default is not null)
@@ -179,11 +181,14 @@ internal static class AuthSurfaceCanonicalizer
         return builder.Length == 0 ? "/" : builder.ToString();
     }
 
-    private static string RenderParameterPolicy(RoutePatternParameterPolicyReference policy, string parameterName)
+    private static string RenderParameterPolicy(
+        RoutePatternParameterPolicyReference policy,
+        string parameterName,
+        bool canonicalizePolicies)
     {
         if (policy.Content is not null)
         {
-            return policy.Content;
+            return canonicalizePolicies ? CanonicalizePolicyContent(policy.Content) : policy.Content;
         }
 
         if (policy.ParameterPolicy is null)
@@ -197,61 +202,107 @@ internal static class AuthSurfaceCanonicalizer
     }
 
     private static string RenderParameterPolicy(IParameterPolicy policy, string parameterName) =>
-        policy switch
-        {
-            AlphaRouteConstraint => "alpha",
-            BoolRouteConstraint => "bool",
-            DateTimeRouteConstraint => "datetime",
-            DecimalRouteConstraint => "decimal",
-            DoubleRouteConstraint => "double",
-            FileNameRouteConstraint => "file",
-            FloatRouteConstraint => "float",
-            GuidRouteConstraint => "guid",
-            IntRouteConstraint => "int",
-            LongRouteConstraint => "long",
-            NonFileNameRouteConstraint => "nonfile",
-            RequiredRouteConstraint => "required",
-            MinLengthRouteConstraint constraint => $"minlength({constraint.MinLength.ToString(CultureInfo.InvariantCulture)})",
-            MaxLengthRouteConstraint constraint => $"maxlength({constraint.MaxLength.ToString(CultureInfo.InvariantCulture)})",
-            LengthRouteConstraint constraint => $"length({constraint.MinLength.ToString(CultureInfo.InvariantCulture)},{constraint.MaxLength.ToString(CultureInfo.InvariantCulture)})",
-            MinRouteConstraint constraint => $"min({constraint.Min.ToString(CultureInfo.InvariantCulture)})",
-            MaxRouteConstraint constraint => $"max({constraint.Max.ToString(CultureInfo.InvariantCulture)})",
-            RangeRouteConstraint constraint => $"range({constraint.Min.ToString(CultureInfo.InvariantCulture)},{constraint.Max.ToString(CultureInfo.InvariantCulture)})",
-            HttpMethodRouteConstraint constraint => RenderHttpMethodPolicy(constraint),
-            CompositeRouteConstraint constraint => RenderCompositePolicy(constraint.Constraints, parameterName, "composite"),
-            OptionalRouteConstraint constraint => RenderCompositePolicy([constraint.InnerConstraint], parameterName, "optional"),
-            RegexRouteConstraint constraint => RenderRegexPolicy(constraint),
-            _ => throw new AuthSurfaceAnalysisException(
-                AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
-                $"Route parameter '{parameterName}' uses unsupported parameter policy type '{StableTypeIdentity(policy.GetType())}'; AuthSurface cannot produce a stable route identity. Use a parsed route constraint or exclude the endpoint explicitly."),
-        };
+        AuthSurfaceParameterPolicyRegistry.Render(policy, parameterName);
 
-    private static string RenderHttpMethodPolicy(HttpMethodRouteConstraint policy) =>
-        "httpMethod(" + string.Join(',', policy.AllowedMethods.OrderBy(static method => method, StringComparer.Ordinal)) + ")";
-
-    private static string RenderCompositePolicy(
-        IEnumerable<IRouteConstraint> constraints,
-        string parameterName,
-        string name)
+    private static string CanonicalizePolicyContent(string content)
     {
-        var rendered = new List<string>();
-        foreach (IRouteConstraint constraint in constraints)
+        string trimmed = content.Trim();
+        int open = trimmed.IndexOf('(');
+        if (open < 1 || !trimmed.EndsWith(')'))
         {
-            if (constraint is not IParameterPolicy parameterPolicy)
-            {
-                throw new AuthSurfaceAnalysisException(
-                    AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
-                    $"Route parameter '{parameterName}' uses a composite constraint with an unsupported member type '{StableTypeIdentity(constraint.GetType())}'; AuthSurface cannot produce a stable route identity.");
-            }
-
-            rendered.Add(RenderParameterPolicy(parameterPolicy, parameterName));
+            return CanonicalizePolicyToken(trimmed);
         }
 
-        return name + "(" + string.Join(',', rendered) + ")";
+        string token = CanonicalizePolicyToken(trimmed[..open]);
+        string arguments = trimmed[(open + 1)..^1];
+        string[] parts = SplitPolicyArguments(arguments);
+        switch (token)
+        {
+            case "length" when parts.Length == 1 && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int length):
+                return $"length({length.ToString(CultureInfo.InvariantCulture)},{length.ToString(CultureInfo.InvariantCulture)})";
+            case "httpMethod":
+                return "httpMethod(" + string.Join(',', parts
+                    .Where(static part => !string.IsNullOrWhiteSpace(part))
+                    .Select(static part => part.Trim().ToUpperInvariant())
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(static part => part, StringComparer.Ordinal)) + ")";
+            case "regex" when parts.Length == 1:
+                int optionsMarker = arguments.LastIndexOf(";options=", StringComparison.OrdinalIgnoreCase);
+                if (optionsMarker > 0)
+                {
+                    string regexText = arguments[..optionsMarker];
+                    string options = arguments[(optionsMarker + ";options=".Length)..].Trim();
+                    return "regex(" + regexText + ";options=" + options + ")";
+                }
+
+                return "regex(" + parts[0] + ";options=0)";
+            case "regex":
+                return "regex(" + string.Join(';', parts) + ")";
+            case "composite":
+                return "composite(" + string.Join(',', parts.Select(CanonicalizePolicyContent).OrderBy(static part => part, StringComparer.Ordinal)) + ")";
+            case "optional" when parts.Length == 1:
+                return "optional(" + CanonicalizePolicyContent(parts[0]) + ")";
+            default:
+                return token + "(" + arguments + ")";
+        }
     }
 
-    private static string RenderRegexPolicy(RegexRouteConstraint policy) =>
-        // Regex.ToString() is the framework Regex representation of its stable pattern,
-        // not an arbitrary application policy object's diagnostic string.
-        "regex(" + policy.Constraint + ";options=" + ((int)policy.Constraint.Options).ToString(CultureInfo.InvariantCulture) + ")";
+    private static string CanonicalizePolicyToken(string token) =>
+        token.Trim() switch
+        {
+            "ALPHA" or "Alpha" or "alpha" => "alpha",
+            "BOOL" or "Bool" or "bool" => "bool",
+            "DATETIME" or "DateTime" or "datetime" => "datetime",
+            "DECIMAL" or "Decimal" or "decimal" => "decimal",
+            "DOUBLE" or "Double" or "double" => "double",
+            "FILE" or "File" or "file" => "file",
+            "FLOAT" or "Float" or "float" => "float",
+            "GUID" or "Guid" or "guid" => "guid",
+            "INT" or "Int" or "int" => "int",
+            "LONG" or "Long" or "long" => "long",
+            "NONFILE" or "NonFile" or "nonfile" => "nonfile",
+            "REQUIRED" or "Required" or "required" => "required",
+            "MINLENGTH" or "MinLength" or "minlength" => "minlength",
+            "MAXLENGTH" or "MaxLength" or "maxlength" => "maxlength",
+            "LENGTH" or "Length" or "length" => "length",
+            "MIN" or "Min" or "min" => "min",
+            "MAX" or "Max" or "max" => "max",
+            "RANGE" or "Range" or "range" => "range",
+            "HTTPMETHOD" or "HttpMethod" or "httpMethod" or "httpmethod" => "httpMethod",
+            "COMPOSITE" or "Composite" or "composite" => "composite",
+            "OPTIONAL" or "Optional" or "optional" => "optional",
+            "REGEX" or "Regex" or "regex" => "regex",
+            _ => token.Trim(),
+        };
+
+    private static string[] SplitPolicyArguments(string arguments)
+    {
+        if (arguments.Length == 0)
+        {
+            return [];
+        }
+
+        var parts = new List<string>();
+        int start = 0;
+        int depth = 0;
+        for (int index = 0; index < arguments.Length; index++)
+        {
+            switch (arguments[index])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')':
+                    depth--;
+                    break;
+                case ',' when depth == 0:
+                    parts.Add(arguments[start..index].Trim());
+                    start = index + 1;
+                    break;
+            }
+        }
+
+        parts.Add(arguments[start..].Trim());
+        return parts.ToArray();
+    }
 }

@@ -15,10 +15,22 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        bool suppressed = args.FirstOrDefault() == "suppressed";
-        Environment.SetEnvironmentVariable("KEELMATRIX_NO_TELEMETRY", suppressed ? "1" : null);
+        string mode = args.FirstOrDefault() ?? "capture";
+        string? suppressionVariable = mode switch
+        {
+            "suppressed:KEELMATRIX_NO_TELEMETRY" => "KEELMATRIX_NO_TELEMETRY",
+            "suppressed:DOTNET_CLI_TELEMETRY_OPTOUT" => "DOTNET_CLI_TELEMETRY_OPTOUT",
+            "suppressed:DO_NOT_TRACK" => "DO_NOT_TRACK",
+            _ => null,
+        };
+        bool suppressed = suppressionVariable is not null;
+        Environment.SetEnvironmentVariable("KEELMATRIX_NO_TELEMETRY", null);
         Environment.SetEnvironmentVariable("DOTNET_CLI_TELEMETRY_OPTOUT", null);
         Environment.SetEnvironmentVariable("DO_NOT_TRACK", null);
+        if (suppressionVariable is not null)
+        {
+            Environment.SetEnvironmentVariable(suppressionVariable, "1");
+        }
 
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -39,6 +51,7 @@ public static class Program
                 app.Services.GetRequiredService<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider>());
             AuthSurfaceReport report = await scanner.ScanAsync();
             AuthSurfaceVerifier.VerifyPolicy(report).AssertValid();
+            Console.WriteLine($"RESULT=VALID;ENDPOINTS={report.Endpoints.Count}");
 
             string? payload = await capture;
             Console.WriteLine(payload is null ? "NO_PAYLOAD" : "PAYLOAD=" + payload);

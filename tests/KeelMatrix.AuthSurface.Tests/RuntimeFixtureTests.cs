@@ -157,7 +157,25 @@ public sealed class RuntimeFixtureTests
         AuthSurfaceReport report = await new AuthSurfaceScanner(app.Services).ScanAsync(
             new AuthSurfaceScanOptions(strictFallbackPolicy: true));
 
-        Assert.Contains(report.PolicyViolations, violation => violation.Code == "fallback-policy-endpoint");
+        AuthSurfaceEndpoint fallback = Find(report, "/unprotected", "GET");
+        Assert.Equal(AuthSurfaceAuthorizationKind.FallbackProtected, fallback.AuthorizationKind);
+        Assert.True(fallback.UsesFallbackPolicy);
+        AuthSurfaceViolation fallbackViolation = Assert.Single(
+            report.PolicyViolations.Where(violation => violation.Code == "fallback-policy-endpoint" && violation.Route == "/unprotected"));
+        Assert.Equal("uses-fallback-policy=false", fallbackViolation.Expected);
+        Assert.Equal("uses-fallback-policy=true", fallbackViolation.Actual);
+        Assert.Contains(AuthSurfaceDiagnosticCatalog.FallbackPolicyDescription.ToLowerInvariant(), fallbackViolation.Message, StringComparison.Ordinal);
+        Assert.Contains(AuthSurfaceDiagnosticCatalog.FallbackPolicyRemediation, fallbackViolation.Message, StringComparison.Ordinal);
+
+        AuthSurfaceEndpoint explicitEndpoint = Find(report, "/explicit", "GET");
+        Assert.Equal(AuthSurfaceAuthorizationKind.ExplicitProtected, explicitEndpoint.AuthorizationKind);
+        Assert.False(explicitEndpoint.UsesFallbackPolicy);
+        Assert.DoesNotContain(report.PolicyViolations, violation => violation.Route == "/explicit");
+
+        AuthSurfaceEndpoint anonymous = Find(report, "/anonymous", "GET");
+        Assert.Equal(AuthSurfaceAuthorizationKind.ExplicitAnonymous, anonymous.AuthorizationKind);
+        Assert.False(anonymous.UsesFallbackPolicy);
+        Assert.DoesNotContain(report.PolicyViolations, violation => violation.Route == "/anonymous");
     }
 
     private static async Task<AuthSurfaceReport> ScanAsync(IServiceProvider services)

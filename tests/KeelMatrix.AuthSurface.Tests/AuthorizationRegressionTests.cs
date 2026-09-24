@@ -403,8 +403,14 @@ public sealed class AuthorizationRegressionTests
         Assert.Contains(baselineEndpoint.Requirements, item => item.Contains("fallback", StringComparison.Ordinal));
         AuthSurfaceReport strictReport = await new AuthSurfaceScanner(baselineApp.Services).ScanAsync(
             new AuthSurfaceScanOptions(strictFallbackPolicy: true));
-        Assert.Contains(strictReport.PolicyViolations, item =>
-            item.Code == "fallback-policy-endpoint" && item.Route == "/requirement-fallback");
+        AuthSurfaceEndpoint strictEndpoint = Assert.Single(
+            strictReport.Endpoints.Where(item => item.Route == "/requirement-fallback"));
+        Assert.Equal(AuthSurfaceAuthorizationKind.ExplicitProtected, strictEndpoint.AuthorizationKind);
+        Assert.True(strictEndpoint.UsesFallbackPolicy);
+        AuthSurfaceViolation strictViolation = Assert.Single(
+            strictReport.PolicyViolations.Where(item => item.Code == "fallback-policy-endpoint" && item.Route == "/requirement-fallback"));
+        Assert.Equal("uses-fallback-policy=false", strictViolation.Expected);
+        Assert.Equal("uses-fallback-policy=true", strictViolation.Actual);
 
         await using WebApplication changedApp = BuildApplication(
             application =>

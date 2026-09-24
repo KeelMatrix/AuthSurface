@@ -67,6 +67,46 @@ public sealed class DocumentationContractTests
     }
 
     [Fact]
+    public void ParameterPolicyMatrixIsDerivedFromTheProductionRegistry()
+    {
+        Type[] registered = AuthSurfaceParameterPolicyRegistry.Supported
+            .Select(static spec => spec.RuntimeType)
+            .OrderBy(static type => type.FullName, StringComparer.Ordinal)
+            .ToArray();
+        Type[] matrix = AuthSurfaceParameterPolicyMatrix.Contracts
+            .Select(static contract => contract.RuntimeType)
+            .OrderBy(static type => type.FullName, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(registered, matrix);
+        Assert.Equal(registered.ToHashSet(), AuthSurfaceParameterPolicyMatrix.VariantTypes);
+        Assert.Equal(registered.Length, registered.Distinct().Count());
+    }
+
+    [Fact]
+    public void StrictFallbackContractIsRestatedConsistentlyAcrossPublicSurfaces()
+    {
+        string root = FindRepositoryRoot();
+        string[] surfaces =
+        [
+            File.ReadAllText(Path.Combine(root, "README.md")),
+            File.ReadAllText(Path.Combine(root, "src", "KeelMatrix.AuthSurface", "README.md")),
+            File.ReadAllText(Path.Combine(root, "docs", "api-reference.md")),
+            File.ReadAllText(Path.Combine(root, "src", "KeelMatrix.AuthSurface", "AuthSurfaceScanOptions.cs")),
+            File.ReadAllText(Path.Combine(root, "src", "KeelMatrix.AuthSurface", "AuthSurfaceDiagnosticCatalog.cs")),
+            File.ReadAllText(Path.Combine(root, "tests", "KeelMatrix.AuthSurface.Tests", "RuntimeFixtureTests.cs")),
+            File.ReadAllText(Path.Combine(root, "tests", "KeelMatrix.AuthSurface.Tests", "AuthorizationRegressionTests.cs")),
+        ];
+
+        Assert.Contains(surfaces, surface => surface.Contains("effective authorization policy includes fallback-policy contribution", StringComparison.Ordinal));
+        Assert.Contains(surfaces, surface => surface.Contains("complete endpoint/default/named/direct policy path", StringComparison.Ordinal));
+        Assert.DoesNotContain(surfaces, surface => surface.Contains("protected only by the fallback policy", StringComparison.Ordinal));
+        Assert.DoesNotContain(surfaces, surface => surface.Contains("requires endpoint-level authorization metadata", StringComparison.Ordinal));
+        Assert.Contains(AuthSurfaceDiagnosticCatalog.FallbackPolicyDescription, surfaces[4], StringComparison.Ordinal);
+        Assert.Contains(AuthSurfaceDiagnosticCatalog.FallbackPolicyRemediation, surfaces[4], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DocumentedDiagnosticExamplesMatchVerifierOutput()
     {
         string root = FindRepositoryRoot();

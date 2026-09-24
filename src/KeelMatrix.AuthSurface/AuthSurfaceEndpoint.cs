@@ -29,7 +29,7 @@ public sealed class AuthSurfaceEndpoint
         RequirementFingerprint = requirementFingerprint;
     }
 
-    /// <summary>Gets the normalized route pattern.</summary>
+    /// <summary>Gets the normalized display route pattern. Durable identity uses a bounded canonical representation of this pattern plus the HTTP method.</summary>
     public string Route { get; }
 
     /// <summary>Gets the sorted HTTP method contract. A method-less endpoint uses <c>*</c>.</summary>

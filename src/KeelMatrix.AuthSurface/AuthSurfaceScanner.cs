@@ -119,11 +119,11 @@ public sealed class AuthSurfaceScanner
                 violations.Add(
                     new AuthSurfaceViolation(
                         AuthSurfaceDiagnosticCode.FallbackPolicyEndpoint,
-                        $"Endpoint '{endpoint.Route}' [{endpoint.Methods[0]}] relies on the fallback policy; strict mode requires endpoint-level authorization metadata.",
+                        AuthSurfaceDiagnosticCatalog.FallbackPolicyMessage(endpoint.Route, endpoint.Methods[0]),
                         endpoint.Route,
                         endpoint.Methods[0],
-                        expected: "explicit-protected-or-explicit-anonymous",
-                        actual: endpoint.AuthorizationKind.ToString()));
+                        expected: "uses-fallback-policy=false",
+                        actual: "uses-fallback-policy=true"));
             }
         }
 

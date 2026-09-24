@@ -127,6 +127,66 @@ public sealed class IdentityContractTests
     }
 
     [Fact]
+    public void BoundedCanonicalRepresentationNormalizesDocumentedEquivalentForms()
+    {
+        Assert.Equal(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:length(3)}", "get"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:length(3,3)}", "GET"));
+        Assert.Equal(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:INT}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:int}", "GET"));
+        Assert.Equal(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:httpmethod(post,GET,POST)}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:httpMethod(GET,POST)}", "GET"));
+        Assert.Equal(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(^\\d+$)}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(^\\d+$;options=0)}", "GET"));
+
+        string programmaticInt = AuthSurfaceCanonicalizer.NormalizeRoute(ProgrammaticPattern(new IntRouteConstraint()));
+        Assert.Equal(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:int}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity(programmaticInt, "GET"));
+        string programmaticRegex = AuthSurfaceCanonicalizer.NormalizeRoute(
+            ProgrammaticPattern(new RegexRouteConstraint(
+                new System.Text.RegularExpressions.Regex("^\\d+$", System.Text.RegularExpressions.RegexOptions.None))));
+        Assert.Equal(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(^\\d+$)}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity(programmaticRegex, "GET"));
+    }
+
+    [Fact]
+    public void BoundedCanonicalRepresentationPreservesDocumentedDistinctForms()
+    {
+        Assert.NotEqual(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:length(3,3)}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:length(3,4)}", "GET"));
+        Assert.NotEqual(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(^\\d+$)}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(^\\D+$)}", "GET"));
+        Assert.NotEqual(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:int}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:int}", "POST"));
+    }
+
+    [Fact]
+    public void CompositeConstraintChildOrderIsCanonicalizedWithoutCollapsingDistinctArguments()
+    {
+        string first = AuthSurfaceCanonicalizer.NormalizeRoute(
+            ProgrammaticPattern(new CompositeRouteConstraint([new IntRouteConstraint(), new MinRouteConstraint(2)])));
+        string reordered = AuthSurfaceCanonicalizer.NormalizeRoute(
+            ProgrammaticPattern(new CompositeRouteConstraint([new MinRouteConstraint(2), new IntRouteConstraint()])));
+        string changed = AuthSurfaceCanonicalizer.NormalizeRoute(
+            ProgrammaticPattern(new CompositeRouteConstraint([new IntRouteConstraint(), new MinRouteConstraint(3)])));
+
+        Assert.Equal(
+            AuthSurfaceCanonicalizer.CanonicalIdentity(first, "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity(reordered, "GET"));
+        Assert.NotEqual(
+            AuthSurfaceCanonicalizer.CanonicalIdentity(first, "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity(changed, "GET"));
+    }
+
+    [Fact]
     public async Task SupportedProgrammaticParameterPoliciesRoundTripThroughPersistedBaseline()
     {
         using var directory = new TemporaryDirectory();

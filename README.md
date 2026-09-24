@@ -45,6 +45,12 @@ The package README is the canonical consumer guide for updates, classifications,
 
 `AuthSurfaceEndpoint.RequirementFingerprint` is the SHA-256 fingerprint of only the ordered canonical `Requirements` sequence. Requirement order and framework-preserved duplicates are identity-significant. Classification, named policies, roles, authentication schemes, and default/fallback provenance have their own fields and comparison codes; changing only one of those values does not emit `endpoint-requirement-changed`.
 
+## Strict fallback enforcement
+
+`AuthSurfaceScanOptions.StrictFallbackPolicy` rejects endpoints whose effective authorization policy includes fallback-policy contribution. This includes an explicitly protected endpoint when its requirement data or other explicit metadata is combined with fallback. The `fallback-policy-endpoint` diagnostic means fallback contributed to the effective policy; it does not mean the endpoint lacked endpoint-level metadata. Supply a complete endpoint/default/named/direct policy path that prevents fallback from contributing, or disable strict fallback enforcement intentionally.
+
+Endpoint identity follows the bounded canonical-representation contract in [`docs/endpoint-identity.md`](docs/endpoint-identity.md). It normalizes only the listed framework equivalences and does not claim general routing semantic equivalence.
+
 ## Diagnostic codes
 
 The following table is the complete stable code set emitted by the shipping assembly through structured violations and analysis or baseline exceptions. Message text may add context; automation should use the code.

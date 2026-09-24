@@ -6,9 +6,15 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <UseAuthSurfacePackage Condition="'$(UseAuthSurfacePackage)' == ''">false</UseAuthSurfacePackage>
   </PropertyGroup>
-  <ItemGroup>
+  <ItemGroup Condition="'$(UseAuthSurfacePackage)' != 'true'">
     <ProjectReference Include="../../src/KeelMatrix.AuthSurface/KeelMatrix.AuthSurface.csproj" />
+    <ProjectReference Include="../../fixtures/AuthSurface.FixtureApp/AuthSurface.FixtureApp.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseAuthSurfacePackage)' == 'true'">
+    <PackageVersion Include="KeelMatrix.AuthSurface" Version="0.1.0" />
+    <PackageReference Include="KeelMatrix.AuthSurface" />
     <ProjectReference Include="../../fixtures/AuthSurface.FixtureApp/AuthSurface.FixtureApp.csproj" />
   </ItemGroup>
 </Project>

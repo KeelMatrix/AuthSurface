@@ -9,7 +9,7 @@ public sealed class AuthSurfaceScanOptions
 
     /// <summary>Initializes scan options with optional route-pattern exclusions.</summary>
     /// <param name="excludedRoutePatterns">Route patterns that should not be included.</param>
-    /// <param name="strictFallbackPolicy">Whether fallback-protected endpoints should be violations.</param>
+    /// <param name="strictFallbackPolicy">Whether to reject endpoints whose effective authorization policy includes fallback-policy contribution.</param>
     public AuthSurfaceScanOptions(
         IEnumerable<string>? excludedRoutePatterns = null,
         bool strictFallbackPolicy = false)
@@ -28,7 +28,7 @@ public sealed class AuthSurfaceScanOptions
     /// <summary>Gets the route patterns excluded from this scan.</summary>
     public IReadOnlySet<string> ExcludedRoutePatterns => excludedRoutePatterns;
 
-    /// <summary>Gets or sets whether fallback-protected endpoints are rejected.</summary>
+    /// <summary>Gets or sets whether endpoints whose effective authorization policy includes fallback-policy contribution are rejected.</summary>
     public bool StrictFallbackPolicy { get; set; }
 
     /// <summary>

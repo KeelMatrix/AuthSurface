@@ -9,7 +9,7 @@ public enum AuthSurfaceAuthorizationKind
     /// <summary>The endpoint has endpoint-specific authorization metadata.</summary>
     ExplicitProtected = 1,
 
-    /// <summary>The endpoint is protected by the application's fallback policy.</summary>
+    /// <summary>The endpoint has no endpoint-specific protecting contribution and is protected by the application's fallback policy.</summary>
     FallbackProtected = 2,
 
     /// <summary>The endpoint has no explicit anonymous metadata or effective policy.</summary>

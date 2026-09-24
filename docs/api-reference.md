@@ -12,6 +12,14 @@ The shipping API is XML-documented in the `KeelMatrix.AuthSurface` assembly. The
 
 The package intentionally exposes no test-framework adapters, handler execution engine, identity-provider client, CLI, or generic security scanner.
 
+## Strict fallback contract
+
+`AuthSurfaceScanOptions.StrictFallbackPolicy` rejects an endpoint when its effective authorization policy includes fallback-policy contribution. An explicitly protected endpoint can therefore produce `fallback-policy-endpoint` when requirement data or other explicit metadata is combined with fallback. The diagnostic remediation is to supply a complete endpoint/default/named/direct policy path that prevents fallback from contributing, or to disable strict fallback enforcement intentionally.
+
+## Endpoint identity contract
+
+Endpoint identity is a deterministic canonical representation of the runtime route pattern plus HTTP method, not a proof of general route-matching semantic equivalence. The canonicalizer normalizes only documented framework equivalences: built-in constraint-token casing, equal one-value/equal-range length constraints, equivalent parsed/programmatic regex forms, HTTP-method constraint casing/order/duplicates, and composite child order. Other representation differences remain identity-significant, and unsupported programmatic policies fail closed with `unsupported-parameter-policy`. Matching bounded identities emit `duplicate-endpoint-identity`; representations outside the bounded rules may remain distinct.
+
 ## Requirement identity
 
 `AuthSurfaceEndpoint.Requirements` preserves the order produced by ASP.NET Core while combining `IAuthorizeData`-derived requirements, explicit `AuthorizationPolicy` requirements, and `IAuthorizationRequirementData`. Requirement order is identity-significant: reversing requirements changes the canonical text, requirement fingerprint, and baseline comparison. Framework-preserved duplicate entries are retained; AuthSurface does not sort or silently deduplicate the framework's sequence.

@@ -141,6 +141,7 @@ public sealed class TelemetryTests
         ProcessResult result = await RunProbeAsync("capture");
 
         Assert.Equal(0, result.ExitCode);
+        Assert.Contains("RESULT=VALID;ENDPOINTS=", result.StandardOutput, StringComparison.Ordinal);
         string payload = Assert.Single(result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries), line => line.StartsWith("PAYLOAD=", StringComparison.Ordinal))["PAYLOAD=".Length..];
         using JsonDocument document = JsonDocument.Parse(payload);
 
@@ -159,10 +160,23 @@ public sealed class TelemetryTests
     [Fact]
     public async Task FreshProcessEnvironmentOptOutSuppressesPayload()
     {
-        ProcessResult result = await RunProbeAsync("suppressed");
+        ProcessResult result = await RunProbeAsync("suppressed:KEELMATRIX_NO_TELEMETRY");
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("NO_PAYLOAD", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("RESULT=VALID;ENDPOINTS=", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("DOTNET_CLI_TELEMETRY_OPTOUT")]
+    [InlineData("DO_NOT_TRACK")]
+    public async Task FreshProcessEachDocumentedEnvironmentOptOutSuppressesPayload(string variable)
+    {
+        ProcessResult result = await RunProbeAsync("suppressed:" + variable);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("NO_PAYLOAD", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("RESULT=VALID;ENDPOINTS=", result.StandardOutput, StringComparison.Ordinal);
     }
 
     private static async Task<ProcessResult> RunProbeAsync(string mode)

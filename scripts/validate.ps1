@@ -55,6 +55,7 @@ try {
     Invoke-Gate 'package inspection' {
         & (Join-Path $PSScriptRoot 'inspect-package.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName -ExpectedVersion $version
     }
+    Invoke-Gate 'built-package telemetry contract' { & (Join-Path $PSScriptRoot 'test-telemetry-package.ps1') -PackagePath $nupkg.FullName }
     $vulnerabilityReportPath = Join-Path ([System.IO.Path]::GetTempPath()) ('authsurface-vulnerabilities-' + [guid]::NewGuid().ToString('N') + '.json')
     try {
         Write-Host "`n=== dependency vulnerability audit ==="
@@ -80,38 +81,9 @@ try {
     Invoke-Gate 'stale-cache package consumer regression' { & (Join-Path $PSScriptRoot 'test-consumer-smoke.ps1') -PackagePath $nupkg.FullName }
     Invoke-Gate 'vulnerability gate negative test' { & (Join-Path $PSScriptRoot 'test-vulnerability-gate.ps1') }
 
-    $forbiddenPattern = '(?i)Paper' + 'clip|Cod' + 'ex|KEE-' + '[0-9]+|Fron' + 'tier|acceptance[- ]' + 'delta|orches' + 'trat|Task Delegator|frontier review|frontier regression|review findings|review gaps|previous matrix|false/incomplete'
-    $validatorPath = 'scripts/validate.ps1'
-    $rgPath = Get-Command rg -CommandType Application -ErrorAction SilentlyContinue |
-        Select-Object -First 1 -ExpandProperty Source
-    $trackedFiles = @(git -C $root ls-files)
-    if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate tracked product files.' }
-    $leaks = foreach ($relativePath in $trackedFiles) {
-        $normalizedPath = $relativePath.Replace('\', '/')
-        if ($normalizedPath -eq $validatorPath) { continue }
-
-        $fullPath = Join-Path $root $relativePath
-        if ($null -ne $rgPath) {
-            & $rgPath -n --no-heading --no-messages $forbiddenPattern -- $fullPath 2>$null
-        }
-        else {
-            Select-String -LiteralPath $fullPath -Pattern $forbiddenPattern -AllMatches -ErrorAction SilentlyContinue |
-                ForEach-Object { "$($_.Path):$($_.LineNumber):$($_.Line)" }
-        }
-    }
-    if ($leaks.Count -gt 0) {
-        $leaks | Write-Output
-        throw 'Internal wording was found in product files.'
-    }
-
-    $history = @(git -C $root log HEAD --format='%H%x09%s')
-    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect candidate commit history.' }
-    $historyLeaks = @($history | Select-String -Pattern $forbiddenPattern)
-    if ($historyLeaks.Count -gt 0) {
-        $historyLeaks | Write-Output
-        throw 'Internal wording was found in candidate commit history.'
-    }
-    Write-Host 'telemetry suppression/privacy checks: passed (suppression variables set; tracked text and candidate commit history are free of prohibited internal wording)'
+    Invoke-Gate 'repository hygiene negative controls' { & (Join-Path $PSScriptRoot 'test-repository-hygiene.ps1') }
+    Invoke-Gate 'tracked repository hygiene' { & (Join-Path $PSScriptRoot 'check-repository-hygiene.ps1') }
+    Write-Host 'telemetry suppression/privacy checks: passed (suppression variables set; tracked paths, tracked contents, and complete candidate commit messages are free of the focused prohibited vocabulary)'
 }
 finally {
     Pop-Location
