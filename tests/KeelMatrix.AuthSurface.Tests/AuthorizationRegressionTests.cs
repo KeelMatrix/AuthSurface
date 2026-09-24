@@ -567,46 +567,6 @@ public sealed class AuthorizationRegressionTests
     }
 
     [Fact]
-    public async Task RealHostPolicyRoleAndSchemeChangesProduceStructuredViolations()
-    {
-        static void AddEquivalentPolicyProvider(IServiceCollection services) =>
-            services.AddSingleton<IAuthorizationPolicyProvider, EquivalentPolicyProvider>();
-
-        await using WebApplication baselineApp = BuildApplication(
-            application =>
-            {
-                application.MapGet("/policy-change", () => Results.Ok()).RequireAuthorization("PolicyA");
-                application.MapGet("/role-change", () => Results.Ok())
-                    .WithMetadata(new AuthorizeAttribute { Roles = "Admin" });
-                application.MapGet("/scheme-change", () => Results.Ok())
-                    .WithMetadata(new AuthorizeAttribute { AuthenticationSchemes = "Bearer" });
-            },
-            configureServices: AddEquivalentPolicyProvider);
-        await baselineApp.StartAsync();
-        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Create(
-            await new AuthSurfaceScanner(baselineApp.Services).ScanAsync());
-
-        await using WebApplication changedApp = BuildApplication(
-            application =>
-            {
-                application.MapGet("/policy-change", () => Results.Ok()).RequireAuthorization("PolicyB");
-                application.MapGet("/role-change", () => Results.Ok())
-                    .WithMetadata(new AuthorizeAttribute { Roles = "Manager" });
-                application.MapGet("/scheme-change", () => Results.Ok())
-                    .WithMetadata(new AuthorizeAttribute { AuthenticationSchemes = "Cookies" });
-            },
-            configureServices: AddEquivalentPolicyProvider);
-        await changedApp.StartAsync();
-        AuthSurfaceVerificationResult result = AuthSurfaceVerifier.Compare(
-            await new AuthSurfaceScanner(changedApp.Services).ScanAsync(),
-            baseline);
-
-        Assert.Contains(result.Violations, item => item.Code == "endpoint-policy-changed" && item.Route == "/policy-change");
-        Assert.Contains(result.Violations, item => item.Code == "endpoint-role-changed" && item.Route == "/role-change");
-        Assert.Contains(result.Violations, item => item.Code == "endpoint-scheme-changed" && item.Route == "/scheme-change");
-    }
-
-    [Fact]
     public async Task RealHostBaselineChangeMatrixCoversRuntimeSurfaceDiffs()
     {
         static void AddEquivalentPolicyProvider(IServiceCollection services) =>
