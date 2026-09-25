@@ -54,8 +54,8 @@ internal static class AuthSurfaceParameterPolicyMatrix
             [typeof(RangeRouteConstraint)] = [static () => new RangeRouteConstraint(2, 9), static () => new RangeRouteConstraint(3, 9)],
             [typeof(RegexRouteConstraint)] =
             [
-                static () => new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("^\\d+$", System.Text.RegularExpressions.RegexOptions.None)),
-                static () => new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("^\\D+$", System.Text.RegularExpressions.RegexOptions.None)),
+                static () => new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("^\\d+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.Compiled)),
+                static () => new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("^\\D+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.Compiled)),
             ],
             [typeof(RequiredRouteConstraint)] = [static () => new RequiredRouteConstraint()],
         };

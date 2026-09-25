@@ -11,6 +11,9 @@ namespace KeelMatrix.AuthSurface;
 
 internal static class AuthSurfaceCanonicalizer
 {
+    private const string TextualPolicyPrefix = "text:";
+    private const string ProgrammaticPolicyPrefix = "programmatic:";
+
     internal static string NormalizeRoute(RoutePattern pattern)
     {
         ArgumentNullException.ThrowIfNull(pattern);
@@ -207,6 +210,17 @@ internal static class AuthSurfaceCanonicalizer
     private static string CanonicalizePolicyContent(string content)
     {
         string trimmed = content.Trim();
+
+        if (trimmed.StartsWith(ProgrammaticPolicyPrefix, StringComparison.Ordinal))
+        {
+            return ProgrammaticPolicyPrefix + CanonicalizeProgrammaticPolicyContent(trimmed[ProgrammaticPolicyPrefix.Length..]);
+        }
+
+        return TextualPolicyPrefix + CanonicalizeTextualPolicyContent(trimmed);
+    }
+
+    private static string CanonicalizeTextualPolicyContent(string trimmed)
+    {
         int open = trimmed.IndexOf('(');
         if (open < 1 || !trimmed.EndsWith(')'))
         {
@@ -215,7 +229,44 @@ internal static class AuthSurfaceCanonicalizer
 
         string token = CanonicalizePolicyToken(trimmed[..open]);
         string arguments = trimmed[(open + 1)..^1];
-        string[] parts = SplitPolicyArguments(arguments);
+
+        // Route regex arguments are one framework-level argument. In particular, commas
+        // in a pattern are not policy-argument separators, and ;options= is ordinary
+        // pattern text unless the application supplied an actual programmatic policy.
+        string[] parts = SplitPolicyArguments(token, arguments);
+        switch (token)
+        {
+            case "regex" when parts.Length == 1:
+                return "regex(" + parts[0] + ")";
+            case "length" when parts.Length == 1 && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int length):
+                return $"length({length.ToString(CultureInfo.InvariantCulture)},{length.ToString(CultureInfo.InvariantCulture)})";
+            case "httpMethod":
+                return "httpMethod(" + string.Join(',', parts
+                    .Where(static part => !string.IsNullOrWhiteSpace(part))
+                    .Select(static part => part.Trim().ToUpperInvariant())
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(static part => part, StringComparer.Ordinal)) + ")";
+            case "composite":
+                return "composite(" + string.Join(',', parts.Select(CanonicalizeTextualPolicyContent).OrderBy(static part => part, StringComparer.Ordinal)) + ")";
+            case "optional" when parts.Length == 1:
+                return "optional(" + CanonicalizeTextualPolicyContent(parts[0]) + ")";
+            default:
+                return token + "(" + arguments.Trim() + ")";
+        }
+    }
+
+    private static string CanonicalizeProgrammaticPolicyContent(string content)
+    {
+        string trimmed = content.Trim();
+        int open = trimmed.IndexOf('(');
+        if (open < 1 || !trimmed.EndsWith(')'))
+        {
+            return CanonicalizePolicyToken(trimmed);
+        }
+
+        string token = CanonicalizePolicyToken(trimmed[..open]);
+        string arguments = trimmed[(open + 1)..^1];
+        string[] parts = SplitPolicyArguments(token, arguments);
         switch (token)
         {
             case "length" when parts.Length == 1 && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int length):
@@ -226,60 +277,55 @@ internal static class AuthSurfaceCanonicalizer
                     .Select(static part => part.Trim().ToUpperInvariant())
                     .Distinct(StringComparer.Ordinal)
                     .OrderBy(static part => part, StringComparer.Ordinal)) + ")";
-            case "regex" when parts.Length == 1:
-                int optionsMarker = arguments.LastIndexOf(";options=", StringComparison.OrdinalIgnoreCase);
-                if (optionsMarker > 0)
-                {
-                    string regexText = arguments[..optionsMarker];
-                    string options = arguments[(optionsMarker + ";options=".Length)..].Trim();
-                    return "regex(" + regexText + ";options=" + options + ")";
-                }
-
-                return "regex(" + parts[0] + ";options=0)";
             case "regex":
-                return "regex(" + string.Join(';', parts) + ")";
+                return "regex(" + arguments.Trim() + ")";
             case "composite":
-                return "composite(" + string.Join(',', parts.Select(CanonicalizePolicyContent).OrderBy(static part => part, StringComparer.Ordinal)) + ")";
+                return "composite(" + string.Join(',', parts.Select(CanonicalizeProgrammaticPolicyContent).OrderBy(static part => part, StringComparer.Ordinal)) + ")";
             case "optional" when parts.Length == 1:
-                return "optional(" + CanonicalizePolicyContent(parts[0]) + ")";
+                return "optional(" + CanonicalizeProgrammaticPolicyContent(parts[0]) + ")";
             default:
-                return token + "(" + arguments + ")";
+                return token + "(" + arguments.Trim() + ")";
         }
     }
 
     private static string CanonicalizePolicyToken(string token) =>
-        token.Trim() switch
+        token.Trim().ToLowerInvariant() switch
         {
-            "ALPHA" or "Alpha" or "alpha" => "alpha",
-            "BOOL" or "Bool" or "bool" => "bool",
-            "DATETIME" or "DateTime" or "datetime" => "datetime",
-            "DECIMAL" or "Decimal" or "decimal" => "decimal",
-            "DOUBLE" or "Double" or "double" => "double",
-            "FILE" or "File" or "file" => "file",
-            "FLOAT" or "Float" or "float" => "float",
-            "GUID" or "Guid" or "guid" => "guid",
-            "INT" or "Int" or "int" => "int",
-            "LONG" or "Long" or "long" => "long",
-            "NONFILE" or "NonFile" or "nonfile" => "nonfile",
-            "REQUIRED" or "Required" or "required" => "required",
-            "MINLENGTH" or "MinLength" or "minlength" => "minlength",
-            "MAXLENGTH" or "MaxLength" or "maxlength" => "maxlength",
-            "LENGTH" or "Length" or "length" => "length",
-            "MIN" or "Min" or "min" => "min",
-            "MAX" or "Max" or "max" => "max",
-            "RANGE" or "Range" or "range" => "range",
-            "HTTPMETHOD" or "HttpMethod" or "httpMethod" or "httpmethod" => "httpMethod",
-            "COMPOSITE" or "Composite" or "composite" => "composite",
-            "OPTIONAL" or "Optional" or "optional" => "optional",
-            "REGEX" or "Regex" or "regex" => "regex",
-            _ => token.Trim(),
+            "alpha" => "alpha",
+            "bool" => "bool",
+            "datetime" => "datetime",
+            "decimal" => "decimal",
+            "double" => "double",
+            "file" => "file",
+            "float" => "float",
+            "guid" => "guid",
+            "int" => "int",
+            "long" => "long",
+            "nonfile" => "nonfile",
+            "required" => "required",
+            "minlength" => "minlength",
+            "maxlength" => "maxlength",
+            "length" => "length",
+            "min" => "min",
+            "max" => "max",
+            "range" => "range",
+            "httpmethod" => "httpMethod",
+            "composite" => "composite",
+            "optional" => "optional",
+            "regex" => "regex",
+            _ => token.Trim().ToLowerInvariant(),
         };
 
-    private static string[] SplitPolicyArguments(string arguments)
+    private static string[] SplitPolicyArguments(string token, string arguments)
     {
         if (arguments.Length == 0)
         {
             return [];
+        }
+
+        if (token == "regex")
+        {
+            return [arguments.Trim()];
         }
 
         var parts = new List<string>();

@@ -4,38 +4,40 @@ AuthSurface freezes multi-method representation as method-specific records. A ro
 
 The durable v1 identity is a deterministic canonical representation of the runtime route pattern plus HTTP method. It is not a proof of general route-matching semantic equivalence. AuthSurface uppercases route literal content, parameter names, and HTTP methods for identity purposes. The readable route preserves its normalized source casing. Display names, controller/action names, source locations, endpoint order, and generated display text are never baseline keys. The readable route is normalized to an absolute pattern with one leading slash, collapsed duplicate separators, and no trailing slash except for `/`.
 
-The canonicalizer deliberately normalizes only bounded framework equivalences: case-insensitive built-in constraint tokens, one-value and equal-range length constraints (`length(3)` equals `length(3,3)`), parsed regex constraints and programmatic regex constraints with equivalent options, HTTP-method constraint casing/order/duplicates, and composite-constraint child order. Constraint arguments, defaults, catch-all encoding, optionality, regex text/options, and other representation details remain identity-significant unless one of those explicit rules applies. Thus `regex(^\\d+$)` and `regex(^\\D+$)` remain different identities, while an inline `int` token and an equivalent `IntRouteConstraint` collapse to the same canonical representation.
+The canonicalizer deliberately keeps policy provenance at the identity boundary. Textual policy content is represented with a `text:` prefix and a programmatic policy without textual content is represented with a `programmatic:` prefix. AuthSurface therefore does not claim that parsed `int` and `IntRouteConstraint` are equivalent, and it cannot infer the meaning of a textual token when an application remaps it with `RouteOptions.SetParameterPolicy`. Built-in textual tokens are case-insensitive, so `iNt` and `int` have the same bounded textual identity. One-value and equal-range length constraints (`length(3)` equals `length(3,3)`), HTTP-method constraint casing/order/duplicates, and composite-constraint child order are also normalized. Constraint arguments, defaults, catch-all encoding, optionality, regex text/options, and other representation details remain identity-significant unless one of those explicit rules applies.
 
-The same renderer handles parsed patterns and programmatically constructed `RoutePattern` instances without `RawText`. An encoded-slash catch-all is rendered with one star (`{*path}`); a non-encoded catch-all is rendered with two (`{**path}`).
+Regex text is one inline framework argument: commas in a pattern, quantifier/range syntax, and literal `;options=` text remain pattern content. Inline regex content is never rewritten as `RegexOptions.None`. Supported programmatic regex policies must use the framework's inline defaults (`IgnoreCase | CultureInvariant | Compiled`, numeric value `521`); other option combinations fail closed with `unsupported-parameter-policy`. This keeps inline `regex(foo)` distinct from a programmatic regex and keeps a literal pattern containing `;options=` distinct from the explicit programmatic representation.
+
+The same renderer handles parsed patterns and programmatically constructed `RoutePattern` instances without `RawText`. An encoded-slash catch-all is rendered with one star (`{*path}`); a non-encoded catch-all is rendered with two (`{**path}`). A programmatic route-policy marker is an AuthSurface persistence encoding, not application route text; it is never reparsed as a claim of framework token-map equivalence.
 
 ## Programmatic parameter policies
 
-For a programmatically constructed `RoutePattern` whose parameter-policy reference has no textual `Content`, AuthSurface supports the following `IParameterPolicy` runtime types and canonical identity text. Numeric examples are representative values. Composite child order is normalized; distinct child arguments remain distinct.
+For a programmatically constructed `RoutePattern` whose parameter-policy reference has no textual `Content`, AuthSurface supports the following `IParameterPolicy` runtime types and explicit programmatic identity text. Numeric examples are representative values. Composite child order is normalized; distinct child arguments remain distinct.
 
 | Runtime type | Canonical identity example |
 | --- | --- |
-| `AlphaRouteConstraint` | `alpha` |
-| `BoolRouteConstraint` | `bool` |
-| `CompositeRouteConstraint` | `composite(int,min(2))` |
-| `DateTimeRouteConstraint` | `datetime` |
-| `DecimalRouteConstraint` | `decimal` |
-| `DoubleRouteConstraint` | `double` |
-| `FileNameRouteConstraint` | `file` |
-| `FloatRouteConstraint` | `float` |
-| `GuidRouteConstraint` | `guid` |
-| `HttpMethodRouteConstraint` | `httpMethod(GET,POST)` |
-| `IntRouteConstraint` | `int` |
-| `LengthRouteConstraint` | `length(3,12)` |
-| `LongRouteConstraint` | `long` |
-| `MaxLengthRouteConstraint` | `maxlength(12)` |
-| `MaxRouteConstraint` | `max(9)` |
-| `MinLengthRouteConstraint` | `minlength(3)` |
-| `MinRouteConstraint` | `min(2)` |
-| `NonFileNameRouteConstraint` | `nonfile` |
-| `OptionalRouteConstraint` | `optional(int)` |
-| `RangeRouteConstraint` | `range(2,9)` |
-| `RegexRouteConstraint` | `regex(^\d+$;options=0)` |
-| `RequiredRouteConstraint` | `required` |
+| `AlphaRouteConstraint` | `programmatic:alpha` |
+| `BoolRouteConstraint` | `programmatic:bool` |
+| `CompositeRouteConstraint` | `programmatic:composite(int,min(2))` |
+| `DateTimeRouteConstraint` | `programmatic:datetime` |
+| `DecimalRouteConstraint` | `programmatic:decimal` |
+| `DoubleRouteConstraint` | `programmatic:double` |
+| `FileNameRouteConstraint` | `programmatic:file` |
+| `FloatRouteConstraint` | `programmatic:float` |
+| `GuidRouteConstraint` | `programmatic:guid` |
+| `HttpMethodRouteConstraint` | `programmatic:httpMethod(GET,POST)` |
+| `IntRouteConstraint` | `programmatic:int` |
+| `LengthRouteConstraint` | `programmatic:length(3,12)` |
+| `LongRouteConstraint` | `programmatic:long` |
+| `MaxLengthRouteConstraint` | `programmatic:maxlength(12)` |
+| `MaxRouteConstraint` | `programmatic:max(9)` |
+| `MinLengthRouteConstraint` | `programmatic:minlength(3)` |
+| `MinRouteConstraint` | `programmatic:min(2)` |
+| `NonFileNameRouteConstraint` | `programmatic:nonfile` |
+| `OptionalRouteConstraint` | `programmatic:optional(int)` |
+| `RangeRouteConstraint` | `programmatic:range(2,9)` |
+| `RegexRouteConstraint` | `programmatic:regex(^\d+$;options=521)` |
+| `RequiredRouteConstraint` | `programmatic:required` |
 
 Parsed policy text is canonicalized only by the explicit rules above. A content-less reference, unsupported programmatic policy type, or unsupported member inside a composite policy is not omitted: analysis fails closed with `unsupported-parameter-policy`. Exclude the endpoint explicitly or use a parsed constraint or one of the supported programmatic types when a stable identity is required.
 

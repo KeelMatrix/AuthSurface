@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Routing.Constraints;
 using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace KeelMatrix.AuthSurface.Tests;
@@ -138,18 +139,15 @@ public sealed class IdentityContractTests
         Assert.Equal(
             AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:httpmethod(post,GET,POST)}", "GET"),
             AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:httpMethod(GET,POST)}", "GET"));
-        Assert.Equal(
-            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(^\\d+$)}", "GET"),
-            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(^\\d+$;options=0)}", "GET"));
 
         string programmaticInt = AuthSurfaceCanonicalizer.NormalizeRoute(ProgrammaticPattern(new IntRouteConstraint()));
-        Assert.Equal(
+        Assert.NotEqual(
             AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:int}", "GET"),
             AuthSurfaceCanonicalizer.CanonicalIdentity(programmaticInt, "GET"));
         string programmaticRegex = AuthSurfaceCanonicalizer.NormalizeRoute(
             ProgrammaticPattern(new RegexRouteConstraint(
-                new System.Text.RegularExpressions.Regex("^\\d+$", System.Text.RegularExpressions.RegexOptions.None))));
-        Assert.Equal(
+                new System.Text.RegularExpressions.Regex("^\\d+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.Compiled))));
+        Assert.NotEqual(
             AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(^\\d+$)}", "GET"),
             AuthSurfaceCanonicalizer.CanonicalIdentity(programmaticRegex, "GET"));
     }
@@ -166,6 +164,75 @@ public sealed class IdentityContractTests
         Assert.NotEqual(
             AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:int}", "GET"),
             AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:int}", "POST"));
+        Assert.NotEqual(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(^\\d+$)}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(^\\d+$;options=0)}", "GET"));
+        Assert.NotEqual(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(foo)}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(foo;options=521)}", "GET"));
+    }
+
+    [Fact]
+    public void PolicyTokenCasingIsInvariantBeyondTheFormerSpellings()
+    {
+        Assert.Equal(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:iNt}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:int}", "GET"));
+    }
+
+    [Theory]
+    [InlineData("regex(ab,1)")]
+    [InlineData("regex(a{{1,3}})")]
+    [InlineData("regex([a-z]{{1,3}})")]
+    public void InlineRegexArgumentsKeepCommasAsPatternText(string policy)
+    {
+        string first = AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:" + policy + "}", "GET");
+        string second = AuthSurfaceCanonicalizer.CanonicalIdentity(
+            "/items/{id:" + policy.Replace(',', ';') + "}",
+            "GET");
+
+        Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public void InlineRegexLiteralOptionsTextIsNotProgrammaticMetadata()
+    {
+        Assert.NotEqual(
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(foo;options=0)}", "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:regex(foo)}", "GET"));
+    }
+
+    [Fact]
+    public void UnsupportedProgrammaticRegexOptionsFailClosed()
+    {
+        Assert.Throws<AuthSurfaceAnalysisException>(() =>
+            AuthSurfaceCanonicalizer.NormalizeRoute(
+                ProgrammaticPattern(new RegexRouteConstraint(
+                    new System.Text.RegularExpressions.Regex("foo", System.Text.RegularExpressions.RegexOptions.None)))));
+    }
+
+    [Fact]
+    public async Task TextualTokenIdentityDoesNotAssumeTheDefaultRouteOptionsMap()
+    {
+        await using WebApplication app = BuildApplication(
+            application => application.MapGet("/items/{id:int}", () => Results.Ok()).AllowAnonymous(),
+            services => services.AddRouting(options => options.ConstraintMap["int"] = typeof(RemappedIntConstraint)));
+        await app.StartAsync();
+
+        RouteEndpoint endpoint = app.Services.GetServices<EndpointDataSource>()
+            .SelectMany(static source => source.Endpoints)
+            .OfType<RouteEndpoint>()
+            .Single(routeEndpoint => routeEndpoint.RoutePattern.RawText == "/items/{id:int}");
+        Assert.Equal(
+            typeof(RemappedIntConstraint),
+            app.Services.GetRequiredService<IOptions<RouteOptions>>().Value.ConstraintMap["int"]);
+
+        string textual = AuthSurfaceCanonicalizer.CanonicalIdentity("/items/{id:int}", "GET");
+        string builtInProgrammatic = AuthSurfaceCanonicalizer.CanonicalIdentity(
+            AuthSurfaceCanonicalizer.NormalizeRoute(ProgrammaticPattern(new IntRouteConstraint())),
+            "GET");
+
+        Assert.NotEqual(textual, builtInProgrammatic);
     }
 
     [Fact]
@@ -273,13 +340,16 @@ public sealed class IdentityContractTests
         return (RouteEndpoint)builder.Build();
     }
 
-    private static WebApplication BuildApplication(Action<WebApplication> configureEndpoints)
+    private static WebApplication BuildApplication(
+        Action<WebApplication> configureEndpoints,
+        Action<IServiceCollection>? configureServices = null)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
             ApplicationName = typeof(FixtureHost).Assembly.GetName().Name,
             EnvironmentName = Environments.Development,
         });
+        configureServices?.Invoke(builder.Services);
         builder.Services.AddAuthorization();
         WebApplication app = builder.Build();
         app.Urls.Add("http://127.0.0.1:0");
@@ -306,6 +376,16 @@ public sealed class IdentityContractTests
     }
 
     private sealed class UnsupportedRouteConstraint : IRouteConstraint
+    {
+        public bool Match(
+            Microsoft.AspNetCore.Http.HttpContext? httpContext,
+            Microsoft.AspNetCore.Routing.IRouter? route,
+            string routeKey,
+            RouteValueDictionary values,
+            RouteDirection routeDirection) => true;
+    }
+
+    private sealed class RemappedIntConstraint : IRouteConstraint
     {
         public bool Match(
             Microsoft.AspNetCore.Http.HttpContext? httpContext,

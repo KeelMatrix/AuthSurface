@@ -12,6 +12,52 @@ namespace KeelMatrix.AuthSurface.Tests;
 public sealed class BaselineSchemaContractTests
 {
     [Fact]
+    public void CheckedInV1GoldenIsReadableCanonicalAndComparable()
+    {
+        string root = FindRepositoryRoot();
+        string fixturePath = Path.Combine(root, "tests", "fixtures", "baseline-schema", "v1", "authsurface.json");
+        byte[] expectedBytes = File.ReadAllBytes(fixturePath);
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Read(fixturePath);
+
+        Assert.Equal(1, baseline.SchemaVersion);
+        Assert.Equal(["/admin/users/{id}", "/fallback", "/public"], baseline.Endpoints.Select(static endpoint => endpoint.Route));
+        Assert.Equal(["Administrators"], baseline.Endpoints[0].Policies);
+        Assert.Equal(["Admin"], baseline.Endpoints[0].Roles);
+        Assert.Equal(["Bearer"], baseline.Endpoints[0].AuthenticationSchemes);
+        Assert.True(baseline.Endpoints[0].UsesDefaultPolicy);
+        Assert.True(baseline.Endpoints[1].UsesFallbackPolicy);
+        Assert.Equal(["first", "second"], baseline.Endpoints[0].Requirements);
+        Assert.Equal("cb3974eaf77aefdade21291e025f18ff0460a3568304ed65392f0b3bc171cd04", baseline.Endpoints[0].RequirementFingerprint);
+
+        using TemporaryDirectory directory = new();
+        string outputPath = Path.Combine(directory.Path, "authsurface.json");
+        baseline.Write(outputPath, overwrite: false);
+        Assert.Equal(expectedBytes, File.ReadAllBytes(outputPath));
+
+        AuthSurfaceEndpoint[] equivalentEndpoints =
+        [
+            Endpoint("/admin/users/{id}", "GET", AuthSurfaceAuthorizationKind.ExplicitProtected, ["Administrators"], ["Admin"], ["Bearer"], true, false, ["first", "second"]),
+            Endpoint("/fallback", "GET", AuthSurfaceAuthorizationKind.FallbackProtected, [], [], [], false, true, ["fallback"]),
+            Endpoint("/public", "POST", AuthSurfaceAuthorizationKind.ExplicitAnonymous, [], [], [], false, false, []),
+        ];
+        Assert.True(AuthSurfaceVerifier.Compare(new AuthSurfaceReport(equivalentEndpoints, []), baseline).IsValid);
+    }
+
+    [Fact]
+    public void CheckedInFutureSchemaFixtureFailsClosedWithoutRewrite()
+    {
+        string root = FindRepositoryRoot();
+        string fixturePath = Path.Combine(root, "tests", "fixtures", "baseline-schema", "future-v2", "authsurface.json");
+        byte[] before = File.ReadAllBytes(fixturePath);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(fixturePath));
+
+        Assert.Equal("baseline-schema-unsupported", exception.Code);
+        Assert.Equal(before, File.ReadAllBytes(fixturePath));
+    }
+
+    [Fact]
     public void UnknownTopLevelFieldFailsClosedAndDoesNotRewriteTheFile()
     {
         AssertRejected(
@@ -430,6 +476,39 @@ public sealed class BaselineSchemaContractTests
         "\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false," +
         "\"requirements\":[\"" + requirement + "\"],\"requirementFingerprint\":\"" +
         AuthSurfaceCanonicalizer.Fingerprint([fingerprintRequirement ?? requirement]) + "\"}]}";
+
+    private static AuthSurfaceEndpoint Endpoint(
+        string route,
+        string method,
+        AuthSurfaceAuthorizationKind authorization,
+        string[] policies,
+        string[] roles,
+        string[] schemes,
+        bool usesDefaultPolicy,
+        bool usesFallbackPolicy,
+        string[] requirements) =>
+        new(
+            route,
+            method,
+            authorization,
+            policies,
+            roles,
+            schemes,
+            usesDefaultPolicy,
+            usesFallbackPolicy,
+            requirements,
+            AuthSurfaceCanonicalizer.Fingerprint(requirements));
+
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "KeelMatrix.AuthSurface.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName ?? throw new InvalidOperationException("Could not locate the repository root.");
+    }
 
     private static void AssertDuplicateFieldRejected(string json, string field, string location)
     {

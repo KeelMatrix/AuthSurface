@@ -6,6 +6,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $validatorPath = 'scripts/validate.ps1'
 $forbiddenPattern = '(?i)Paper' + 'clip|Cod' + 'ex|KEE-' + '[0-9]+|Fron' + 'tier|acceptance[- ]' + 'delta|orches' + 'trat|Task ' + 'Delegator|frontier ' + 'review|frontier ' + 'regression|review ' + 'findings|review ' + 'gaps|previous ' + 'matrix|false/' + 'incomplete|task[- ]' + 'delegator'
+$canonicalName = 'KeelMatrix'
+$canonicalEmail = 'keelmatrix@gmail.com'
+$dependabotName = 'dependabot[bot]'
+$dependabotEmails = @(
+    '49699333+dependabot[bot]@users.noreply.github.com',
+    'dependabot[bot]@users.noreply.github.com'
+)
 
 function Invoke-Git([string[]] $Arguments) {
     $output = & git -C $Root @Arguments 2>&1
@@ -37,14 +44,43 @@ foreach ($relativePath in $trackedFiles) {
     }
 }
 
-$history = [string](Invoke-Git @('log', 'HEAD', '--format=%B'))
-if ([regex]::IsMatch($history, $forbiddenPattern)) {
-    $violations.Add('complete candidate commit message')
+$candidateCommits = @(Invoke-Git @('rev-list', 'HEAD')) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }
+foreach ($commit in $candidateCommits) {
+    $identity = [string](Invoke-Git @('show', '-s', '--format=%an%x09%ae%x09%cn%x09%ce', $commit))
+    $identityParts = $identity -split "`t"
+    if ($identityParts.Count -ne 4) {
+        $violations.Add("commit identity unreadable: $commit")
+        continue
+    }
+
+    $authorAllowed =
+        ($identityParts[0] -eq $canonicalName -and $identityParts[1] -eq $canonicalEmail) -or
+        ($identityParts[0] -eq $dependabotName -and $dependabotEmails -contains $identityParts[1])
+    $committerAllowed =
+        ($identityParts[2] -eq $canonicalName -and $identityParts[3] -eq $canonicalEmail) -or
+        ($identityParts[2] -eq $dependabotName -and $dependabotEmails -contains $identityParts[3])
+
+    if (-not $authorAllowed) {
+        $violations.Add("commit author identity: $commit ($($identityParts[0]) <$($identityParts[1])>)")
+    }
+
+    if (-not $committerAllowed) {
+        $violations.Add("commit committer identity: $commit ($($identityParts[2]) <$($identityParts[3])>)")
+    }
+
+    $message = [string]::Join([Environment]::NewLine, @(Invoke-Git @('show', '-s', '--format=%B', $commit)))
+    if ([regex]::IsMatch($message, $forbiddenPattern)) {
+        $violations.Add("complete candidate commit message: $commit")
+    }
+
+    if ([regex]::IsMatch($message, '(?im)^\s*Co-authored-by\s*:')) {
+        $violations.Add("unapproved commit trailer: $commit")
+    }
 }
 
 if ($violations.Count -gt 0) {
     $violations | Write-Output
-    throw 'Tracked paths, tracked contents, or complete candidate commit messages contain prohibited internal wording.'
+    throw 'Repository hygiene failed: tracked paths/content, complete candidate commit messages, or candidate-history author metadata violate the public repository contract.'
 }
 
-Write-Output 'Repository hygiene passed: tracked paths, tracked contents, and complete candidate commit messages are free of the focused prohibited vocabulary.'
+Write-Output 'Repository hygiene passed: tracked paths/content, complete candidate commit messages, and candidate-history author metadata satisfy the public repository contract.'

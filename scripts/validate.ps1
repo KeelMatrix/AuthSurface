@@ -81,9 +81,9 @@ try {
     Invoke-Gate 'stale-cache package consumer regression' { & (Join-Path $PSScriptRoot 'test-consumer-smoke.ps1') -PackagePath $nupkg.FullName }
     Invoke-Gate 'vulnerability gate negative test' { & (Join-Path $PSScriptRoot 'test-vulnerability-gate.ps1') }
 
-    Invoke-Gate 'repository hygiene negative controls' { & (Join-Path $PSScriptRoot 'test-repository-hygiene.ps1') }
-    Invoke-Gate 'tracked repository hygiene' { & (Join-Path $PSScriptRoot 'check-repository-hygiene.ps1') }
-    Write-Host 'telemetry suppression/privacy checks: passed (suppression variables set; tracked paths, tracked contents, and complete candidate commit messages are free of the focused prohibited vocabulary)'
+    Invoke-Gate 'repository hygiene and authorship negative controls' { & (Join-Path $PSScriptRoot 'test-repository-hygiene.ps1') }
+    Invoke-Gate 'release-candidate repository hygiene and authorship' { & (Join-Path $PSScriptRoot 'check-repository-hygiene.ps1') }
+    Write-Host 'telemetry suppression/privacy checks: passed (suppression variables set; tracked paths/content, complete candidate commit messages, and candidate-history author metadata satisfy the public contract)'
 }
 finally {
     Pop-Location

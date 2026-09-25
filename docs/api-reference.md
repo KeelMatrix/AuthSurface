@@ -18,7 +18,7 @@ The package intentionally exposes no test-framework adapters, handler execution 
 
 ## Endpoint identity contract
 
-Endpoint identity is a deterministic canonical representation of the runtime route pattern plus HTTP method, not a proof of general route-matching semantic equivalence. The canonicalizer normalizes only documented framework equivalences: built-in constraint-token casing, equal one-value/equal-range length constraints, equivalent parsed/programmatic regex forms, HTTP-method constraint casing/order/duplicates, and composite child order. Other representation differences remain identity-significant, and unsupported programmatic policies fail closed with `unsupported-parameter-policy`. Matching bounded identities emit `duplicate-endpoint-identity`; representations outside the bounded rules may remain distinct.
+Endpoint identity is a deterministic canonical representation of the runtime route pattern plus HTTP method, not a proof of general route-matching semantic equivalence. Textual and programmatic parameter policies retain separate provenance markers; AuthSurface does not infer that a textual token such as `int` resolves to the built-in constraint when an application may remap it. Built-in textual token casing, equal one-value/equal-range length constraints, HTTP-method constraint casing/order/duplicates, and composite child order are normalized. Inline regex commas and literal `;options=` remain pattern text; supported programmatic regex requires the framework inline defaults, and other options fail closed with `unsupported-parameter-policy`. Matching bounded identities emit `duplicate-endpoint-identity`; representations outside the bounded rules may remain distinct.
 
 ## Requirement identity
 

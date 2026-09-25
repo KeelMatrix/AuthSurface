@@ -17,6 +17,11 @@ $ciVariables = @(
     'TRAVIS', 'CIRCLECI', 'CODEBUILD_BUILD_ID', 'TEAMCITY_VERSION', 'BITBUCKET_BUILD_NUMBER', 'APPVEYOR'
 )
 $oldCiValues = @{}
+$allowedPayloadFields = @(
+    'event', 'tool', 'tool_version', 'telemetry_version', 'schema_version',
+    'project_hash', 'installation_hash', 'runtime', 'os', 'ci', 'timestamp'
+)
+$requiredPayloadFields = @('project_hash', 'installation_hash')
 
 function Invoke-Checked([string] $FileName, [string[]] $Arguments) {
     & $FileName @Arguments
@@ -63,8 +68,38 @@ try {
             }
 
             if ($mode -eq 'capture') {
-                if ($output -notmatch 'PAYLOAD=') {
+                $payloadLines = @($output -split "`r?`n" | Where-Object { $_.StartsWith('PAYLOAD=', [StringComparison]::Ordinal) })
+                if ($payloadLines.Count -ne 1) {
                     throw 'Built-package positive telemetry control emitted no payload.'
+                }
+
+                $payloadText = $payloadLines[0].Substring('PAYLOAD='.Length)
+                try {
+                    $payload = $payloadText | ConvertFrom-Json
+                }
+                catch {
+                    throw 'Built-package positive telemetry control emitted a payload that is not valid JSON.'
+                }
+
+                $payloadProperties = @($payload.PSObject.Properties.Name)
+                if ($payloadProperties.Count -eq 0) {
+                    throw 'Built-package positive telemetry control emitted an empty payload.'
+                }
+
+                $unexpectedFields = @($payloadProperties | Where-Object { $allowedPayloadFields -notcontains $_ })
+                if ($unexpectedFields.Count -gt 0) {
+                    throw "Built-package telemetry payload contains undocumented fields: $($unexpectedFields -join ', ')."
+                }
+
+                foreach ($requiredField in $requiredPayloadFields) {
+                    if ($payloadProperties -notcontains $requiredField) {
+                        throw "Built-package telemetry payload is missing required field '$requiredField'."
+                    }
+                }
+
+                $sensitivePattern = '(?i)route|policy|role|scheme|baseline|controller|action|path|claim|credential|diagnostic'
+                if ([regex]::IsMatch($payloadText, $sensitivePattern)) {
+                    throw 'Built-package telemetry payload contains route, policy, role, scheme, baseline, controller/action, path, claim, credential, or diagnostic data.'
                 }
             }
             elseif ($output -notmatch 'NO_PAYLOAD') {

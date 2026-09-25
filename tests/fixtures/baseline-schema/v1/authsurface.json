@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "endpoints": [
+    {
+      "route": "/admin/users/{id}",
+      "methods": [
+        "GET"
+      ],
+      "authorization": "ExplicitProtected",
+      "policies": [
+        "Administrators"
+      ],
+      "roles": [
+        "Admin"
+      ],
+      "schemes": [
+        "Bearer"
+      ],
+      "usesDefaultPolicy": true,
+      "usesFallbackPolicy": false,
+      "requirements": [
+        "first",
+        "second"
+      ],
+      "requirementFingerprint": "cb3974eaf77aefdade21291e025f18ff0460a3568304ed65392f0b3bc171cd04"
+    },
+    {
+      "route": "/fallback",
+      "methods": [
+        "GET"
+      ],
+      "authorization": "FallbackProtected",
+      "policies": [],
+      "roles": [],
+      "schemes": [],
+      "usesDefaultPolicy": false,
+      "usesFallbackPolicy": true,
+      "requirements": [
+        "fallback"
+      ],
+      "requirementFingerprint": "d132cc8cdf8870f7e6ad6f89cad3a8082fb1939965834115ae98f7152f987858"
+    },
+    {
+      "route": "/public",
+      "methods": [
+        "POST"
+      ],
+      "authorization": "ExplicitAnonymous",
+      "policies": [],
+      "roles": [],
+      "schemes": [],
+      "usesDefaultPolicy": false,
+      "usesFallbackPolicy": false,
+      "requirements": [],
+      "requirementFingerprint": "431bf5c814e384ce9fa40f655f4b94f7f6a8c8504ea4844c30c484ebf03121f1"
+    }
+  ]
+}

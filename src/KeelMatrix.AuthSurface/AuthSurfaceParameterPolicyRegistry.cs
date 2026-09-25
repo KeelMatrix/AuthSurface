@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Constraints;
 
@@ -23,6 +24,9 @@ internal sealed class AuthSurfaceParameterPolicySpec
 
 internal static class AuthSurfaceParameterPolicyRegistry
 {
+    private const RegexOptions FrameworkInlineRegexOptions =
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled;
+
     internal static IReadOnlyList<AuthSurfaceParameterPolicySpec> Supported { get; } =
     [
         new(typeof(AlphaRouteConstraint), static (_, _) => "alpha"),
@@ -55,9 +59,16 @@ internal static class AuthSurfaceParameterPolicyRegistry
             RangeRouteConstraint constraint = (RangeRouteConstraint)policy;
             return $"range({constraint.Min.ToString(CultureInfo.InvariantCulture)},{constraint.Max.ToString(CultureInfo.InvariantCulture)})";
         }),
-        new(typeof(RegexRouteConstraint), static (policy, _) =>
+        new(typeof(RegexRouteConstraint), static (policy, parameterName) =>
         {
             RegexRouteConstraint constraint = (RegexRouteConstraint)policy;
+            if (constraint.Constraint.Options != FrameworkInlineRegexOptions)
+            {
+                throw new AuthSurfaceAnalysisException(
+                    AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
+                    $"Route parameter '{parameterName}' uses a regex policy with unsupported options '{constraint.Constraint.Options}'; AuthSurface only supports the framework inline regex defaults.");
+            }
+
             return $"regex({constraint.Constraint};options={((int)constraint.Constraint.Options).ToString(CultureInfo.InvariantCulture)})";
         }),
         new(typeof(RequiredRouteConstraint), static (_, _) => "required"),
@@ -67,6 +78,9 @@ internal static class AuthSurfaceParameterPolicyRegistry
         Supported.ToDictionary(static spec => spec.RuntimeType);
 
     internal static string Render(IParameterPolicy policy, string parameterName)
+        => "programmatic:" + RenderUnwrapped(policy, parameterName);
+
+    private static string RenderUnwrapped(IParameterPolicy policy, string parameterName)
     {
         ArgumentNullException.ThrowIfNull(policy);
         ArgumentException.ThrowIfNullOrWhiteSpace(parameterName);
@@ -103,7 +117,7 @@ internal static class AuthSurfaceParameterPolicyRegistry
                     $"Route parameter '{parameterName}' uses a composite constraint with an unsupported member type '{AuthSurfaceCanonicalizer.StableTypeIdentity(constraint.GetType())}'; AuthSurface cannot produce a stable route identity.");
             }
 
-            rendered.Add(Render(parameterPolicy, parameterName));
+            rendered.Add(RenderUnwrapped(parameterPolicy, parameterName));
         }
 
         rendered.Sort(StringComparer.Ordinal);
