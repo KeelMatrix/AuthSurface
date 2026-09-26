@@ -52,6 +52,13 @@ public sealed class AuthSurfaceScanner
             foreach (Endpoint endpoint in dataSource.Endpoints)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (endpoints.Count >= AuthSurfaceCanonicalizer.MaximumEndpointCount)
+                {
+                    throw new AuthSurfaceAnalysisException(
+                        AuthSurfaceDiagnosticCode.EndpointLimit,
+                        $"The scan exceeds the supported {AuthSurfaceCanonicalizer.MaximumEndpointCount:N0}-endpoint bound.");
+                }
+
                 if (endpoint is not RouteEndpoint routeEndpoint)
                 {
                     continue;
@@ -85,7 +92,8 @@ public sealed class AuthSurfaceScanner
                         facts.UsesDefaultPolicy,
                         facts.UsesFallbackPolicy,
                         facts.Requirements,
-                        facts.RequirementFingerprint);
+                        facts.RequirementFingerprint,
+                        AuthSurfaceCanonicalizer.CanonicalIdentity(routeEndpoint.RoutePattern, method));
 
                     if (!identities.Add(record.Identity))
                     {
@@ -141,6 +149,12 @@ public sealed class AuthSurfaceScanner
             endpoint.Metadata.GetOrderedMetadata<IAuthorizationRequirementData>();
         bool hasEndpointAuthorization = authorizeData.Count > 0 || explicitPolicies.Count > 0;
         bool hasAnyAuthorizationMetadata = hasEndpointAuthorization || requirementData.Count > 0;
+        if (authorizeData.Count + explicitPolicies.Count + requirementData.Count > AuthSurfaceCanonicalizer.MaximumMetadataItems)
+        {
+            throw new AuthSurfaceAnalysisException(
+                AuthSurfaceDiagnosticCode.MetadataLimit,
+                $"Endpoint '{route}' exceeds the supported authorization metadata bound of {AuthSurfaceCanonicalizer.MaximumMetadataItems:N0} items.");
+        }
         bool isAnonymous = endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null;
         AuthorizationPolicy? effectivePolicy = null;
         var requirementDataRequirements = new List<IAuthorizationRequirement>();
@@ -157,10 +171,20 @@ public sealed class AuthSurfaceScanner
 
                 foreach (IAuthorizationRequirementData metadata in requirementData)
                 {
-                    requirementDataRequirements.AddRange(metadata.GetRequirements());
+                    foreach (IAuthorizationRequirement requirement in metadata.GetRequirements())
+                    {
+                        if (requirementDataRequirements.Count >= AuthSurfaceCanonicalizer.MaximumMetadataItems)
+                        {
+                            throw new AuthSurfaceAnalysisException(
+                                AuthSurfaceDiagnosticCode.MetadataLimit,
+                                $"Endpoint '{route}' exceeds the supported authorization requirement-data bound of {AuthSurfaceCanonicalizer.MaximumMetadataItems:N0} requirements.");
+                        }
+
+                        requirementDataRequirements.Add(requirement);
+                    }
                 }
 
-                if (requirementDataRequirements.Count > 0)
+                if (requirementData.Count > 0)
                 {
                     var requirementPolicyBuilder = new AuthorizationPolicyBuilder();
                     foreach (IAuthorizationRequirement requirement in requirementDataRequirements)
@@ -173,7 +197,7 @@ public sealed class AuthSurfaceScanner
                         : AuthorizationPolicy.Combine(effectivePolicy, requirementPolicy);
                 }
             }
-            catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
+            catch (Exception exception) when (exception is not OperationCanceledException && exception is not AuthSurfaceAnalysisException)
             {
                 throw new AuthSurfaceAnalysisException(
                     AuthSurfaceDiagnosticCode.PolicyResolutionFailed,
@@ -209,7 +233,11 @@ public sealed class AuthSurfaceScanner
             authorizeData.Select(static data => data.AuthenticationSchemes));
         string[] policyRoles = effectivePolicy is null
             ? []
-            : effectivePolicy.Requirements.OfType<RolesAuthorizationRequirement>().SelectMany(static requirement => requirement.AllowedRoles).ToArray();
+            : effectivePolicy.Requirements
+                .Where(static requirement => requirement.GetType() == typeof(RolesAuthorizationRequirement))
+                .Cast<RolesAuthorizationRequirement>()
+                .SelectMany(static requirement => requirement.AllowedRoles)
+                .ToArray();
         string[] roles = rolesFromMetadata
             .Concat(AuthSurfaceCanonicalizer.OrderedDistinctExact(policyRoles))
             .Distinct(StringComparer.Ordinal)

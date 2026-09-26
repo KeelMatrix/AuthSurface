@@ -13,6 +13,8 @@ $dependabotEmails = @(
     '49699333+dependabot[bot]@users.noreply.github.com',
     'dependabot[bot]@users.noreply.github.com'
 )
+$githubWebName = 'GitHub'
+$githubWebEmail = 'noreply@github.com'
 
 function Invoke-Git([string[]] $Arguments) {
     $output = & git -C $Root @Arguments 2>&1
@@ -44,6 +46,11 @@ foreach ($relativePath in $trackedFiles) {
     }
 }
 
+$shallow = ([string](Invoke-Git @('rev-parse', '--is-shallow-repository'))).Trim()
+if ($shallow -eq 'true') {
+    throw 'Repository history is shallow; fetch the complete candidate history before claiming a repository-hygiene pass.'
+}
+
 $candidateCommits = @(Invoke-Git @('rev-list', 'HEAD')) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }
 foreach ($commit in $candidateCommits) {
     $identity = [string](Invoke-Git @('show', '-s', '--format=%an%x09%ae%x09%cn%x09%ce', $commit))
@@ -58,6 +65,8 @@ foreach ($commit in $candidateCommits) {
         ($identityParts[0] -eq $dependabotName -and $dependabotEmails -contains $identityParts[1])
     $committerAllowed =
         ($identityParts[2] -eq $canonicalName -and $identityParts[3] -eq $canonicalEmail) -or
+        ($identityParts[0] -eq $canonicalName -and $identityParts[1] -eq $canonicalEmail -and
+            $identityParts[2] -eq $githubWebName -and $identityParts[3] -eq $githubWebEmail) -or
         ($identityParts[2] -eq $dependabotName -and $dependabotEmails -contains $identityParts[3])
 
     if (-not $authorAllowed) {

@@ -2,6 +2,7 @@ using AuthSurface.FixtureApp;
 using System.Globalization;
 using KeelMatrix.AuthSurface;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -125,6 +126,165 @@ public sealed class IdentityContractTests
 
         Assert.Equal(2, report.Endpoints.Count);
         Assert.NotEqual(report.Endpoints[0].Route, report.Endpoints[1].Route);
+    }
+
+    [Fact]
+    public void RawTextDoesNotDiscardMergedDefaultsOrParameterPolicies()
+    {
+        RoutePattern first = RoutePatternFactory.Parse(
+            "/items/{id}",
+            new RouteValueDictionary(new { id = "first" }),
+            new { id = new IntRouteConstraint() });
+        RoutePattern second = RoutePatternFactory.Parse(
+            "/items/{id}",
+            new RouteValueDictionary(new { id = "second" }),
+            new { id = new LongRouteConstraint() });
+
+        Assert.Equal(first.RawText, second.RawText);
+        Assert.NotEqual(
+            AuthSurfaceCanonicalizer.NormalizeRoute(first),
+            AuthSurfaceCanonicalizer.NormalizeRoute(second));
+        Assert.NotEqual(
+            AuthSurfaceCanonicalizer.CanonicalIdentity(first, "GET"),
+            AuthSurfaceCanonicalizer.CanonicalIdentity(second, "GET"));
+    }
+
+    [Fact]
+    public async Task LiteralBracesAndParameterSegmentsHaveDistinctIdentities()
+    {
+        var source = new DefaultEndpointDataSource([
+            BuildEndpoint(RoutePatternFactory.Parse("/literal/{{id}}")),
+            BuildEndpoint(RoutePatternFactory.Parse("/literal/{id}")),
+        ]);
+
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [source],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        Assert.Equal(2, report.Endpoints.Count);
+        Assert.Contains(report.Endpoints, endpoint => endpoint.Route == "/literal/{{id}}" && endpoint.Methods[0] == "GET");
+        Assert.Contains(report.Endpoints, endpoint => endpoint.Route == "/literal/{id}" && endpoint.Methods[0] == "GET");
+    }
+
+    [Fact]
+    public async Task ProgrammaticRegexQuantifierIsEscapedAndRoundTripsThroughBaseline()
+    {
+        RoutePattern pattern = ProgrammaticPattern(new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+            "^\\d{1,3}$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+            System.Text.RegularExpressions.RegexOptions.Compiled)));
+        var source = new DefaultEndpointDataSource([BuildEndpoint(pattern)]);
+
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [source],
+            new AllowingPolicyProvider()).ScanAsync();
+        AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+        Assert.Contains("{{1,3}}", endpoint.Route, StringComparison.Ordinal);
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+
+        Assert.Equal(endpoint.Route, Assert.Single(roundTrip.Endpoints).Route);
+        Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid);
+    }
+
+    [Fact]
+    public async Task DerivedRolesRequirementIsOpaqueAndDoesNotPopulateRoles()
+    {
+        var policy = new AuthorizationPolicyBuilder()
+            .AddRequirements(new DerivedRolesRequirement("custom-state", ["Admin"]))
+            .Build();
+        var builder = new RouteEndpointBuilder(
+            _ => Task.CompletedTask,
+            RoutePatternFactory.Parse("/derived-role"),
+            order: 0);
+        builder.Metadata.Add(new HttpMethodMetadata(["GET"]));
+        builder.Metadata.Add(policy);
+        RouteEndpoint endpoint = (RouteEndpoint)builder.Build();
+
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([endpoint])],
+            new AllowingPolicyProvider()).ScanAsync();
+        AuthSurfaceEndpoint record = Assert.Single(report.Endpoints);
+
+        Assert.Empty(record.Roles);
+        Assert.Contains(record.Requirements, value => value.Contains(nameof(DerivedRolesRequirement), StringComparison.Ordinal) && value.EndsWith("|opaque", StringComparison.Ordinal));
+        Assert.DoesNotContain(record.Requirements, value => value.Contains("kind=roles", StringComparison.Ordinal));
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+        Assert.Contains(Assert.Single(roundTrip.Endpoints).Requirements, value => value.EndsWith("|opaque", StringComparison.Ordinal));
+        Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid);
+    }
+
+    [Fact]
+    public async Task DeepTextualPolicyFailsClosedBeforeUnboundedRecursion()
+    {
+        string policy = "int";
+        for (int index = 0; index < 64; index++)
+        {
+            policy = "optional(" + policy + ")";
+        }
+
+        var source = new DefaultEndpointDataSource([BuildEndpoint(RoutePatternFactory.Parse("/items/{id:" + policy + "}"))]);
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner([source], new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("route-policy-too-deep", exception.Code);
+    }
+
+    [Fact]
+    public async Task DeepProgrammaticCompositeFailsClosedBeforeUnboundedRecursion()
+    {
+        IParameterPolicy policy = new IntRouteConstraint();
+        for (int index = 0; index < 64; index++)
+        {
+            policy = new OptionalRouteConstraint((IRouteConstraint)policy);
+        }
+
+        var source = new DefaultEndpointDataSource([BuildEndpoint(ProgrammaticPattern(policy))]);
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner([source], new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("route-policy-too-deep", exception.Code);
+    }
+
+    [Fact]
+    public async Task LargeRequirementDataCollectionFailsClosedWithoutPartialReport()
+    {
+        var builder = new RouteEndpointBuilder(
+            _ => Task.CompletedTask,
+            RoutePatternFactory.Parse("/large-metadata"),
+            order: 0);
+        builder.Metadata.Add(new HttpMethodMetadata(["GET"]));
+        builder.Metadata.Add(new LargeRequirementData());
+        RouteEndpoint endpoint = (RouteEndpoint)builder.Build();
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([endpoint])],
+                new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("metadata-limit", exception.Code);
+    }
+
+    [Fact]
+    public async Task LongRouteFailsClosedWithBoundedDiagnostic()
+    {
+        var source = new DefaultEndpointDataSource([
+            BuildEndpoint(RoutePatternFactory.Parse("/" + new string('a', 20_000))),
+        ]);
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner([source], new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("route-pattern-too-large", exception.Code);
     }
 
     [Fact]
@@ -338,6 +498,29 @@ public sealed class IdentityContractTests
         builder.Metadata.Add(new HttpMethodMetadata(["GET"]));
         builder.Metadata.Add(new AllowAnonymousAttribute());
         return (RouteEndpoint)builder.Build();
+    }
+
+    private sealed class DerivedRolesRequirement : RolesAuthorizationRequirement
+    {
+        public DerivedRolesRequirement(string state, IEnumerable<string> allowedRoles)
+            : base(allowedRoles)
+        {
+            State = state;
+        }
+
+        public string State { get; }
+    }
+
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class, AllowMultiple = false, Inherited = true)]
+    private sealed class LargeRequirementData : Attribute, IAuthorizationRequirementData
+    {
+        public IEnumerable<IAuthorizationRequirement> GetRequirements()
+        {
+            for (int index = 0; index <= AuthSurfaceCanonicalizer.MaximumMetadataItems; index++)
+            {
+                yield return new ClaimsAuthorizationRequirement("scope", [index.ToString(CultureInfo.InvariantCulture)]);
+            }
+        }
     }
 
     private static WebApplication BuildApplication(

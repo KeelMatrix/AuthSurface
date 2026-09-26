@@ -27,6 +27,12 @@ function Assert-HygieneFails {
     }
 }
 
+function Restore-CanonicalLatestCommit {
+    Invoke-TempGit @('config', 'user.name', 'KeelMatrix')
+    Invoke-TempGit @('config', 'user.email', 'keelmatrix@gmail.com')
+    Invoke-TempGit @('commit', '--quiet', '--amend', '--author', 'KeelMatrix <keelmatrix@gmail.com>', '-m', 'Canonicalize test identity')
+}
+
 try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     Invoke-TempGit @('init', '--quiet')
@@ -37,11 +43,29 @@ try {
     Invoke-TempGit @('commit', '--quiet', '-m', 'Add documentation', '-m', 'A normal review note remains developer-facing.')
     & $checker -Root $tempRoot | Out-Null
 
-    function Restore-CanonicalLatestCommit {
-        Invoke-TempGit @('config', 'user.name', 'KeelMatrix')
-        Invoke-TempGit @('config', 'user.email', 'keelmatrix@gmail.com')
-        Invoke-TempGit @('commit', '--quiet', '--amend', '--author', 'KeelMatrix <keelmatrix@gmail.com>', '-m', 'Canonicalize test identity')
+    Set-Content -LiteralPath (Join-Path $tempRoot 'dependabot.txt') -Value 'dependency maintenance' -Encoding utf8
+    Invoke-TempGit @('add', '--', 'dependabot.txt')
+    Invoke-TempGit @('config', 'user.name', 'dependabot[bot]')
+    Invoke-TempGit @('config', 'user.email', '49699333+dependabot[bot]@users.noreply.github.com')
+    Invoke-TempGit @('commit', '--quiet', '-m', 'Bump dependency')
+    & $checker -Root $tempRoot | Out-Null
+    Restore-CanonicalLatestCommit
+
+    Set-Content -LiteralPath (Join-Path $tempRoot 'web-flow.txt') -Value 'browser maintenance' -Encoding utf8
+    Invoke-TempGit @('add', '--', 'web-flow.txt')
+    $oldCommitterName = $env:GIT_COMMITTER_NAME
+    $oldCommitterEmail = $env:GIT_COMMITTER_EMAIL
+    $env:GIT_COMMITTER_NAME = 'GitHub'
+    $env:GIT_COMMITTER_EMAIL = 'noreply@github.com'
+    try {
+        Invoke-TempGit @('commit', '--quiet', '--author', 'KeelMatrix <keelmatrix@gmail.com>', '-m', 'Update changelog')
     }
+    finally {
+        if ($null -eq $oldCommitterName) { Remove-Item Env:GIT_COMMITTER_NAME -ErrorAction SilentlyContinue } else { $env:GIT_COMMITTER_NAME = $oldCommitterName }
+        if ($null -eq $oldCommitterEmail) { Remove-Item Env:GIT_COMMITTER_EMAIL -ErrorAction SilentlyContinue } else { $env:GIT_COMMITTER_EMAIL = $oldCommitterEmail }
+    }
+    & $checker -Root $tempRoot | Out-Null
+    Restore-CanonicalLatestCommit
 
     function Assert-IdentityFails {
         param([string] $Reason)
@@ -93,7 +117,12 @@ try {
     Invoke-TempGit @('commit', '--quiet', '-m', 'Add body control', '-m', $bodyPhrase)
     Assert-HygieneFails 'prohibited wording in a complete commit body'
 
-    Write-Output 'Repository hygiene controls passed: canonical history identities, unapproved trailers, tracked internal-only paths, and prohibited commit-body wording are rejected.'
+    $shallowHead = (& git -C $tempRoot rev-parse HEAD).Trim()
+    Set-Content -LiteralPath (Join-Path $tempRoot '.git/shallow') -Value $shallowHead -Encoding ascii
+    Assert-HygieneFails 'history completeness must be explicit for a shallow checkout'
+    Remove-Item -LiteralPath (Join-Path $tempRoot '.git/shallow') -Force
+
+    Write-Output 'Repository hygiene controls passed: ordinary, GitHub web-flow, and Dependabot identities are accepted; shallow history, unapproved trailers, tracked internal-only paths, and prohibited commit-body wording are rejected.'
 }
 finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

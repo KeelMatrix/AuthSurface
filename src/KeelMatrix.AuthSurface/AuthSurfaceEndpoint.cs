@@ -15,7 +15,8 @@ public sealed class AuthSurfaceEndpoint
         bool usesDefaultPolicy,
         bool usesFallbackPolicy,
         IEnumerable<string> requirements,
-        string requirementFingerprint)
+        string requirementFingerprint,
+        string? identity = null)
     {
         Route = route;
         Methods = ImmutableArray.Create(method);
@@ -27,7 +28,10 @@ public sealed class AuthSurfaceEndpoint
         UsesFallbackPolicy = usesFallbackPolicy;
         Requirements = requirements.ToImmutableArray();
         RequirementFingerprint = requirementFingerprint;
+        this.identity = identity;
     }
+
+    private readonly string? identity;
 
     /// <summary>Gets the normalized display route pattern. Durable identity uses a bounded canonical representation of this pattern plus the HTTP method.</summary>
     public string Route { get; }
@@ -62,7 +66,7 @@ public sealed class AuthSurfaceEndpoint
 
     internal string Method => Methods[0];
 
-    internal string Identity => AuthSurfaceCanonicalizer.CanonicalIdentity(Route, Method);
+    internal string Identity => identity ?? AuthSurfaceCanonicalizer.CanonicalIdentity(Route, Method);
 
     internal AuthSurfaceEndpoint Clone() => new(
         Route,
@@ -74,5 +78,6 @@ public sealed class AuthSurfaceEndpoint
         UsesDefaultPolicy,
         UsesFallbackPolicy,
         Requirements,
-        RequirementFingerprint);
+        RequirementFingerprint,
+        Identity);
 }

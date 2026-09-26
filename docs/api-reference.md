@@ -18,15 +18,17 @@ The package intentionally exposes no test-framework adapters, handler execution 
 
 ## Endpoint identity contract
 
-Endpoint identity is a deterministic canonical representation of the runtime route pattern plus HTTP method, not a proof of general route-matching semantic equivalence. Textual and programmatic parameter policies retain separate provenance markers; AuthSurface does not infer that a textual token such as `int` resolves to the built-in constraint when an application may remap it. Built-in textual token casing, equal one-value/equal-range length constraints, HTTP-method constraint casing/order/duplicates, and composite child order are normalized. Inline regex commas and literal `;options=` remain pattern text; supported programmatic regex requires the framework inline defaults, and other options fail closed with `unsupported-parameter-policy`. Matching bounded identities emit `duplicate-endpoint-identity`; representations outside the bounded rules may remain distinct.
+Endpoint identity is a deterministic canonical representation of the runtime `RoutePattern` structure plus HTTP method, not a proof of general route-matching semantic equivalence. `RawText` is not used as a lossy shortcut: merged defaults, optional/catch-all shape, literal braces, and parameter policies participate in the representation. Textual and programmatic parameter policies retain separate provenance markers; AuthSurface does not infer that a textual token such as `int` resolves to the built-in constraint when an application may remap it. Built-in textual token casing, equal one-value/equal-range length constraints, HTTP-method constraint casing/order/duplicates, and composite child order are normalized. Inline regex commas and literal `;options=` remain pattern text; route-syntax braces in regex content are escaped for round-trip persistence. Supported programmatic regex requires the framework inline defaults, and other options fail closed with `unsupported-parameter-policy`. Matching bounded identities emit `duplicate-endpoint-identity`; representations outside the bounded rules may remain distinct. A version-1 endpoint may carry an optional lossless `identity` field when readable route text cannot preserve programmatic provenance.
 
 ## Requirement identity
 
-`AuthSurfaceEndpoint.Requirements` preserves the order produced by ASP.NET Core while combining `IAuthorizeData`-derived requirements, explicit `AuthorizationPolicy` requirements, and `IAuthorizationRequirementData`. Requirement order is identity-significant: reversing requirements changes the canonical text, requirement fingerprint, and baseline comparison. Framework-preserved duplicate entries are retained; AuthSurface does not sort or silently deduplicate the framework's sequence.
+`AuthSurfaceEndpoint.Requirements` preserves the order produced by ASP.NET Core while combining `IAuthorizeData`-derived requirements, explicit `AuthorizationPolicy` requirements, and `IAuthorizationRequirementData`. If requirement-data metadata is present, AuthSurface constructs the same requirement-data policy as authorization middleware, including the empty-policy failure. Requirement order is identity-significant: reversing requirements changes the canonical text, requirement fingerprint, and baseline comparison. Framework-preserved duplicate entries are retained; AuthSurface does not sort or silently deduplicate the framework's sequence.
 
 The ordered `Requirements` sequence is the single source of truth for requirement identity. `AuthSurfaceEndpoint.RequirementFingerprint` is the SHA-256 fingerprint of only that sequence. Classification, named policies, roles, authentication schemes, and default/fallback provenance do not contribute to the fingerprint and are compared through their dedicated fields and diagnostic codes. `endpoint-requirement-changed` is emitted only when the ordered canonical requirements change.
 
-Baseline schema version 1 remains unchanged because its requirement array already stores an ordered sequence and its fingerprint field remains a 64-character SHA-256 value. This is a pre-release contract clarification. A schema-version-1 baseline produced by an earlier build may need regeneration when its requirement array reflects the former sorted order or its fingerprint includes non-requirement authorization metadata. Schema-version-1 readers preserve the stored order and reject a fingerprint that does not match the sequence.
+Baseline schema version 1 stores the readable route plus an optional lossless identity for structural route representations that cannot be reconstructed from display text. Existing version-1 baselines without that optional field remain readable. The requirement fingerprint remains a 64-character SHA-256 value, and readers preserve the stored order and reject a fingerprint that does not match the sequence.
+
+The supported requirement value boundary is exact runtime type identity for the framework requirement types whose complete values AuthSurface serializes. Derived or custom requirements retain stable type identity with an explicit `opaque` marker; AuthSurface does not inspect arbitrary custom state. Route canonicalization is bounded to a 16,384-character route, 8,192-character policy expression, depth 32, and 100,000 policy-work operations. A scan also bounds endpoints and requirement metadata at 100,000 items. These limits fail closed with structured analysis diagnostics. Application callbacks are invoked synchronously; cancellation is checked between scanner-owned enumeration steps and cannot interrupt arbitrary callback code.
 
 ## Diagnostic code contract
 
@@ -52,6 +54,7 @@ The following table is the complete stable code set that the shipping assembly c
 | `endpoint-classification-changed` | `AuthSurfaceViolation` |
 | `endpoint-default-policy-changed` | `AuthSurfaceViolation` |
 | `endpoint-fallback-policy-changed` | `AuthSurfaceViolation` |
+| `endpoint-limit` | `AuthSurfaceAnalysisException` |
 | `endpoint-policy-changed` | `AuthSurfaceViolation` |
 | `endpoint-removed` | `AuthSurfaceViolation` |
 | `endpoint-requirement-changed` | `AuthSurfaceViolation` |
@@ -59,7 +62,11 @@ The following table is the complete stable code set that the shipping assembly c
 | `endpoint-route-changed` | `AuthSurfaceViolation` |
 | `endpoint-scheme-changed` | `AuthSurfaceViolation` |
 | `fallback-policy-endpoint` | `AuthSurfaceViolation` |
+| `metadata-limit` | `AuthSurfaceAnalysisException` |
 | `policy-resolution-failed` | `AuthSurfaceAnalysisException` |
+| `route-pattern-too-large` | `AuthSurfaceAnalysisException` |
+| `route-policy-too-complex` | `AuthSurfaceAnalysisException` |
+| `route-policy-too-deep` | `AuthSurfaceAnalysisException` |
 | `unprotected-endpoint` | `AuthSurfaceViolation` |
 | `unsupported-parameter-policy` | `AuthSurfaceAnalysisException` |
 <!-- END:DIAGNOSTIC-CODES -->

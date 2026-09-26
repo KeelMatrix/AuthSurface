@@ -251,6 +251,7 @@ public sealed class AuthSurfaceBaseline
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         ReadCommentHandling = JsonCommentHandling.Disallow,
         AllowTrailingCommas = false,
@@ -270,6 +271,7 @@ public sealed class AuthSurfaceBaseline
     private static readonly HashSet<string> EndpointFields =
     [
         "route",
+        "identity",
         "methods",
         "authorization",
         "policies",
@@ -481,6 +483,7 @@ public sealed class AuthSurfaceBaseline
     private static void ValidateEndpointFieldTypes(JsonElement endpoint, string path)
     {
         ValidateString(endpoint, "route", path);
+        ValidateOptionalString(endpoint, "identity", path);
         ValidateString(endpoint, "authorization", path);
         ValidateString(endpoint, "requirementFingerprint", path);
         ValidateStringArray(endpoint, "methods", path);
@@ -495,6 +498,17 @@ public sealed class AuthSurfaceBaseline
     private static void ValidateString(JsonElement value, string name, string path)
     {
         if (value.TryGetProperty(name, out JsonElement property) && property.ValueKind != JsonValueKind.String)
+        {
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineFieldType,
+                $"The baseline field '{path}.{name}' must be a JSON string.");
+        }
+    }
+
+    private static void ValidateOptionalString(JsonElement value, string name, string path)
+    {
+        if (value.TryGetProperty(name, out JsonElement property) &&
+            property.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
         {
             throw new AuthSurfaceBaselineException(
                 AuthSurfaceDiagnosticCode.BaselineFieldType,
@@ -544,6 +558,7 @@ public sealed class AuthSurfaceBaseline
     private static EndpointDocument ToDocument(AuthSurfaceEndpoint endpoint) => new()
     {
         Route = endpoint.Route,
+        Identity = GetPersistedIdentity(endpoint),
         Methods = endpoint.Methods.ToList(),
         Authorization = endpoint.AuthorizationKind.ToString(),
         Policies = endpoint.Policies.ToList(),
@@ -604,7 +619,25 @@ public sealed class AuthSurfaceBaseline
             document.UsesDefaultPolicy,
             document.UsesFallbackPolicy,
             document.Requirements,
-            calculatedFingerprint);
+            calculatedFingerprint,
+            string.IsNullOrWhiteSpace(document.Identity) ? null : document.Identity);
+    }
+
+    private static string? GetPersistedIdentity(AuthSurfaceEndpoint endpoint)
+    {
+        try
+        {
+            return string.Equals(
+                endpoint.Identity,
+                AuthSurfaceCanonicalizer.CanonicalIdentity(endpoint.Route, endpoint.Method),
+                StringComparison.Ordinal)
+                ? null
+                : endpoint.Identity;
+        }
+        catch (AuthSurfaceAnalysisException)
+        {
+            return endpoint.Identity;
+        }
     }
 
     private sealed class BaselineDocument
@@ -617,6 +650,8 @@ public sealed class AuthSurfaceBaseline
     private sealed class EndpointDocument
     {
         public string? Route { get; set; }
+
+        public string? Identity { get; set; }
 
         public List<string>? Methods { get; set; }
 

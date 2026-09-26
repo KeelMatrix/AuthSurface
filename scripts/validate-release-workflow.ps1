@@ -28,6 +28,11 @@ if (-not (Test-Path -LiteralPath $ciWorkflowPath -PathType Leaf)) {
 $releaseWorkflow = Get-Content -LiteralPath $releaseWorkflowPath -Raw
 $ciWorkflow = Get-Content -LiteralPath $ciWorkflowPath -Raw
 
+if ($ciWorkflow -notmatch '(?ms)uses:\s+actions/checkout@[0-9a-f]{40}\s*\r?\n\s+with:\s*\r?\n\s+fetch-depth:\s+0' -or
+    $releaseWorkflow -notmatch '(?ms)uses:\s+actions/checkout@[0-9a-f]{40}\s*\r?\n\s+with:\s*\r?\n\s+fetch-depth:\s+0') {
+    throw 'CI and release workflows must fetch complete history for the repository-hygiene history claim.'
+}
+
 if ($ciWorkflow -notmatch '(?ms)^on:\s*\r?\n\s+push:\s*\r?\n\s+branches:\s*\r?\n\s+-\s+main\s*\r?\n\s+pull_request:\s*(?:\r?\n|$)') {
     throw 'CI workflow must trigger on pushes to main and pull requests.'
 }

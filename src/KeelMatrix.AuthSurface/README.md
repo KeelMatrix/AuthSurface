@@ -51,7 +51,7 @@ AuthSurface emits one deterministic record for each normalized route and HTTP me
 The four classifications are:
 
 - `ExplicitAnonymous`: runtime metadata contains `IAllowAnonymous`; the intentional public endpoint remains visible.
-- `ExplicitProtected`: non-empty endpoint authorization metadata, an explicit `AuthorizationPolicy`, or non-empty requirement data contributes protection.
+- `ExplicitProtected`: endpoint authorization metadata, an explicit `AuthorizationPolicy`, or non-empty requirement data contributes protection. If requirement-data metadata exists but produces no requirements, policy construction fails closed because that is the framework middleware behavior.
 - `FallbackProtected`: no endpoint-specific protecting contribution exists, but the application's fallback policy protects it.
 - `Unprotected`: no explicit anonymous metadata and no effective protecting policy exist; this fails the default policy check.
 
@@ -59,7 +59,9 @@ The four classifications are:
 
 ## Baselines, identity, and diagnostics
 
-`authsurface.json` is bounded, UTF-8, schema-versioned JSON with deterministic endpoint ordering and `\n` newlines. Requirement arrays retain framework combination order, including framework-preserved duplicates, and requirement order is identity-significant: reversing requirements changes the canonical text, requirement-only fingerprint, and baseline comparison result. Classification, named policies, roles, authentication schemes, and default/fallback provenance are excluded from `requirementFingerprint` and use their dedicated comparison codes. Schema version 1 accepts one leading UTF-8 BOM when the document is otherwise valid; a raw BOM inside the document is invalid, while an escaped `\uFEFF` sequence inside a JSON string is treated as ordinary string content. The writer always emits BOM-free UTF-8. Schema version remains 1 because the existing requirement-array representation already carries sequence order and the fingerprint remains a 64-character SHA-256 value; this is a pre-release contract clarification. Version 1 baselines written by earlier builds may need regeneration when their requirement arrays contain the former sorted order or their fingerprints include non-requirement authorization metadata. The reader preserves the stored requirement order and rejects a fingerprint that does not match that sequence. It rejects schema errors with structured `AuthSurfaceBaselineException` diagnostics and never silently rewrites a file. Duplicate and unknown property names are rendered in diagnostics at no more than 128 characters; longer names end with `…(truncated)` to keep diagnostic text bounded.
+`authsurface.json` is bounded, UTF-8, schema-versioned JSON with deterministic endpoint ordering and `\n` newlines. Requirement arrays retain framework combination order, including framework-preserved duplicates, and requirement order is identity-significant: reversing requirements changes the canonical text, requirement-only fingerprint, and baseline comparison result. Classification, named policies, roles, authentication schemes, and default/fallback provenance are excluded from `requirementFingerprint` and use their dedicated comparison codes. Schema version 1 accepts one leading UTF-8 BOM when the document is otherwise valid; a raw BOM inside the document is invalid, while an escaped `\uFEFF` sequence inside a JSON string is treated as ordinary string content. The writer always emits BOM-free UTF-8. Endpoint records may include an optional lossless `identity` field for structural route representations; older version-1 records without it remain readable. The reader preserves the stored requirement order and rejects a fingerprint that does not match that sequence. It rejects schema errors with structured `AuthSurfaceBaselineException` diagnostics and never silently rewrites a file. Duplicate and unknown property names are rendered in diagnostics at no more than 128 characters; longer names end with `…(truncated)` to keep diagnostic text bounded.
+
+Framework requirement canonicalization uses an exact supported-runtime-type policy. Derived or custom requirements retain stable type identity with an explicit `opaque` marker, and arbitrary custom state is never reflected. Route processing is bounded to a 16,384-character route, 8,192-character policy expression, depth 32, and 100,000 policy-work operations; scans bound endpoints and requirement metadata at 100,000 items. These bounds fail closed with structured diagnostics. Scanner-owned cancellation checks do not promise interruption of arbitrary application callbacks.
 
 ## Troubleshooting
 
@@ -85,6 +87,7 @@ This table is the complete stable code set emitted by the shipping assembly. `Au
 | `endpoint-classification-changed` | An endpoint changed among the four authorization classifications. | Review its runtime authorization metadata and accept only an intentional posture change. |
 | `endpoint-default-policy-changed` | The default-policy contribution flag changed. | Review the endpoint metadata and application default policy. |
 | `endpoint-fallback-policy-changed` | The fallback-policy contribution flag changed. | Review the application fallback policy and the endpoint's explicit metadata. |
+| `endpoint-limit` | The scan exceeds the supported endpoint count. | Reduce the endpoint set or explicitly filter infrastructure endpoints. |
 | `endpoint-policy-changed` | The exact named-policy sequence changed. | Review the named policies and dynamic policy-provider result. |
 | `endpoint-removed` | A baseline endpoint has no matching current endpoint. | Confirm the route was intentionally removed, then update the baseline. |
 | `endpoint-requirement-changed` | The ordered canonical effective requirements changed. | Review the effective authorization-policy requirements before accepting the new baseline. |
@@ -92,7 +95,11 @@ This table is the complete stable code set emitted by the shipping assembly. `Au
 | `endpoint-route-changed` | The readable normalized route changed for the same canonical identity. | Review the route spelling/casing and update the baseline only when intentional. |
 | `endpoint-scheme-changed` | The canonical authentication-scheme set changed. | Review endpoint and policy scheme metadata before accepting the change. |
 | `fallback-policy-endpoint` | Fallback contributed to the effective authorization policy while strict mode was enabled. | Supply a complete endpoint/default/named/direct policy path that prevents fallback from contributing, or disable strict fallback enforcement intentionally. |
+| `metadata-limit` | An endpoint exceeds the supported authorization metadata or requirement-data count. | Reduce generated metadata or split the endpoint configuration. |
 | `policy-resolution-failed` | The application's policy provider could not resolve the endpoint's authorization metadata. | Register a resolvable policy provider and scan the completed host again. |
+| `route-pattern-too-large` | A route pattern exceeds the supported character bound. | Shorten or explicitly exclude the route. |
+| `route-policy-too-complex` | A route policy exceeds the supported length or work bound. | Simplify or explicitly exclude the route. |
+| `route-policy-too-deep` | A route policy exceeds the supported nesting-depth bound. | Simplify or explicitly exclude the route. |
 | `unprotected-endpoint` | An endpoint is neither explicitly anonymous nor protected by an effective policy. | Add authorization, mark it explicitly anonymous, or explicitly exclude it. |
 | `unsupported-parameter-policy` | A programmatic route parameter policy has no stable representation supported by AuthSurface. | Use a parsed route constraint, a supported framework constraint, or explicitly exclude the endpoint. |
 <!-- END:DIAGNOSTIC-CODES -->

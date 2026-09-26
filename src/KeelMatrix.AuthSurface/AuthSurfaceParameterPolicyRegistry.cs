@@ -77,13 +77,35 @@ internal static class AuthSurfaceParameterPolicyRegistry
     private static readonly Dictionary<Type, AuthSurfaceParameterPolicySpec> Specs =
         Supported.ToDictionary(static spec => spec.RuntimeType);
 
-    internal static string Render(IParameterPolicy policy, string parameterName)
-        => "programmatic:" + RenderUnwrapped(policy, parameterName);
+    internal static string Render(
+        IParameterPolicy policy,
+        string parameterName,
+        AuthSurfaceCanonicalizationBudget budget)
+        => "programmatic:" + RenderUnwrapped(policy, parameterName, budget, depth: 0);
 
-    private static string RenderUnwrapped(IParameterPolicy policy, string parameterName)
+    private static string RenderUnwrapped(
+        IParameterPolicy policy,
+        string parameterName,
+        AuthSurfaceCanonicalizationBudget budget,
+        int depth)
     {
         ArgumentNullException.ThrowIfNull(policy);
         ArgumentException.ThrowIfNullOrWhiteSpace(parameterName);
+        budget.Visit();
+        if (depth >= AuthSurfaceCanonicalizer.MaximumRoutePolicyDepth)
+        {
+            throw AuthSurfaceCanonicalizer.RoutePolicyTooDeep();
+        }
+
+        if (policy is CompositeRouteConstraint composite)
+        {
+            return RenderCompositePolicy(composite.Constraints, parameterName, "composite", budget, depth);
+        }
+
+        if (policy is OptionalRouteConstraint optional)
+        {
+            return RenderCompositePolicy([optional.InnerConstraint], parameterName, "optional", budget, depth);
+        }
 
         if (!Specs.TryGetValue(policy.GetType(), out AuthSurfaceParameterPolicySpec? spec))
         {
@@ -105,7 +127,19 @@ internal static class AuthSurfaceParameterPolicyRegistry
     private static string RenderCompositePolicy(
         IEnumerable<IRouteConstraint> constraints,
         string parameterName,
-        string name)
+        string name) => RenderCompositePolicy(
+            constraints,
+            parameterName,
+            name,
+            new AuthSurfaceCanonicalizationBudget(),
+            depth: 0);
+
+    private static string RenderCompositePolicy(
+        IEnumerable<IRouteConstraint> constraints,
+        string parameterName,
+        string name,
+        AuthSurfaceCanonicalizationBudget budget,
+        int depth)
     {
         var rendered = new List<string>();
         foreach (IRouteConstraint constraint in constraints)
@@ -117,7 +151,7 @@ internal static class AuthSurfaceParameterPolicyRegistry
                     $"Route parameter '{parameterName}' uses a composite constraint with an unsupported member type '{AuthSurfaceCanonicalizer.StableTypeIdentity(constraint.GetType())}'; AuthSurface cannot produce a stable route identity.");
             }
 
-            rendered.Add(RenderUnwrapped(parameterPolicy, parameterName));
+            rendered.Add(RenderUnwrapped(parameterPolicy, parameterName, budget, depth + 1));
         }
 
         rendered.Sort(StringComparer.Ordinal);

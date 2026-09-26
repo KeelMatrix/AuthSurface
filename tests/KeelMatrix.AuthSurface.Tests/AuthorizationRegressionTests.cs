@@ -75,7 +75,7 @@ public sealed class AuthorizationRegressionTests
     }
 
     [Fact]
-    public async Task EmptyRequirementDataPreservesConfiguredFallbackPolicy()
+    public async Task EmptyRequirementDataWithConfiguredFallbackFailsLikeAuthorizationMiddleware()
     {
         await using WebApplication app = BuildApplication(
             application => application.MapGet("/empty-fallback", () => Results.Ok())
@@ -83,22 +83,16 @@ public sealed class AuthorizationRegressionTests
             fallbackPolicy: true);
         await app.StartAsync();
 
-        AuthSurfaceEndpoint endpoint = Assert.Single(
-            (await new AuthSurfaceScanner(app.Services).ScanAsync()).Endpoints
-                .Where(item => item.Route == "/empty-fallback"));
-        AuthorizationPolicy? frameworkPolicy = await CombineFrameworkPolicyAsync(app, "/empty-fallback");
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(app.Services).ScanAsync());
 
-        Assert.NotNull(frameworkPolicy);
-        Assert.Equal(
-            AuthSurfaceCanonicalizer.CanonicalizeRequirements(frameworkPolicy),
-            endpoint.Requirements);
-        Assert.Equal(AuthSurfaceAuthorizationKind.FallbackProtected, endpoint.AuthorizationKind);
-        Assert.True(endpoint.UsesFallbackPolicy);
-        Assert.False(endpoint.Requirements.Count == 0);
+        Assert.Equal("policy-resolution-failed", exception.Code);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await InvokeFrameworkAuthorizationMiddlewareAsync(app, "/empty-fallback"));
     }
 
     [Fact]
-    public async Task EmptyRequirementDataWithoutFallbackMatchesFrameworkWithoutPolicy()
+    public async Task EmptyRequirementDataWithoutFallbackFailsPolicyConstruction()
     {
         await using WebApplication app = BuildApplication(
             application => application.MapGet("/empty-no-fallback", () => Results.Ok())
@@ -106,21 +100,16 @@ public sealed class AuthorizationRegressionTests
             fallbackPolicy: false);
         await app.StartAsync();
 
-        AuthSurfaceReport report = await new AuthSurfaceScanner(app.Services).ScanAsync();
-        AuthSurfaceEndpoint endpoint = Assert.Single(
-            report.Endpoints.Where(item => item.Route == "/empty-no-fallback"));
-        AuthorizationPolicy? frameworkPolicy = await CombineFrameworkPolicyAsync(app, "/empty-no-fallback");
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(app.Services).ScanAsync());
 
-        Assert.Null(frameworkPolicy);
-        Assert.Equal(AuthSurfaceAuthorizationKind.Unprotected, endpoint.AuthorizationKind);
-        Assert.False(endpoint.UsesDefaultPolicy);
-        Assert.False(endpoint.UsesFallbackPolicy);
-        Assert.Empty(endpoint.Requirements);
-        Assert.Contains(report.PolicyViolations, item => item.Code == "unprotected-endpoint");
+        Assert.Equal("policy-resolution-failed", exception.Code);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await InvokeFrameworkAuthorizationMiddlewareAsync(app, "/empty-no-fallback"));
     }
 
     [Fact]
-    public async Task EmptyRequirementDataWithDefaultPolicyMatchesFrameworkDefaultPolicy()
+    public async Task EmptyRequirementDataWithDefaultPolicyFailsPolicyConstruction()
     {
         await using WebApplication app = BuildApplication(
             application => application.MapGet("/empty-default", () => Results.Ok())
@@ -129,22 +118,16 @@ public sealed class AuthorizationRegressionTests
             fallbackPolicy: false);
         await app.StartAsync();
 
-        AuthSurfaceEndpoint endpoint = Assert.Single(
-            (await new AuthSurfaceScanner(app.Services).ScanAsync()).Endpoints
-                .Where(item => item.Route == "/empty-default"));
-        AuthorizationPolicy? frameworkPolicy = await CombineFrameworkPolicyAsync(app, "/empty-default");
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(app.Services).ScanAsync());
 
-        Assert.NotNull(frameworkPolicy);
-        Assert.Equal(
-            AuthSurfaceCanonicalizer.CanonicalizeRequirements(frameworkPolicy),
-            endpoint.Requirements);
-        Assert.Equal(AuthSurfaceAuthorizationKind.ExplicitProtected, endpoint.AuthorizationKind);
-        Assert.True(endpoint.UsesDefaultPolicy);
-        Assert.False(endpoint.UsesFallbackPolicy);
+        Assert.Equal("policy-resolution-failed", exception.Code);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await InvokeFrameworkAuthorizationMiddlewareAsync(app, "/empty-default"));
     }
 
     [Fact]
-    public async Task EmptyRequirementDataPreservesExplicitNamedPolicyProvenance()
+    public async Task EmptyRequirementDataWithExplicitNamedPolicyFailsPolicyConstruction()
     {
         await using WebApplication app = BuildApplication(
             application => application.MapGet("/empty-explicit", () => Results.Ok())
@@ -152,43 +135,34 @@ public sealed class AuthorizationRegressionTests
             configureServices: services => services.AddSingleton<IAuthorizationPolicyProvider, EquivalentPolicyProvider>());
         await app.StartAsync();
 
-        AuthSurfaceEndpoint endpoint = Assert.Single(
-            (await new AuthSurfaceScanner(app.Services).ScanAsync()).Endpoints
-                .Where(item => item.Route == "/empty-explicit"));
-        AuthorizationPolicy? frameworkPolicy = await CombineFrameworkPolicyAsync(app, "/empty-explicit");
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(app.Services).ScanAsync());
 
-        Assert.NotNull(frameworkPolicy);
-        Assert.Equal(
-            AuthSurfaceCanonicalizer.CanonicalizeRequirements(frameworkPolicy),
-            endpoint.Requirements);
-        Assert.Equal(["Policy"], endpoint.Policies);
-        Assert.Equal(AuthSurfaceAuthorizationKind.ExplicitProtected, endpoint.AuthorizationKind);
-        Assert.False(endpoint.UsesDefaultPolicy);
-        Assert.False(endpoint.UsesFallbackPolicy);
+        Assert.Equal("policy-resolution-failed", exception.Code);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await InvokeFrameworkAuthorizationMiddlewareAsync(app, "/empty-explicit"));
     }
 
     [Fact]
-    public async Task EmptyRequirementDataFallbackContributionChangeProducesStructuredViolations()
+    public async Task EmptyRequirementDataFallbackContributionChangeFailsClosedInBothApplications()
     {
         await using WebApplication baselineApp = BuildApplication(
             application => application.MapGet("/empty-fallback-change", () => Results.Ok())
                 .WithMetadata(new EmptyRequirementData()),
             fallbackPolicy: true);
         await baselineApp.StartAsync();
-        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Create(
-            await new AuthSurfaceScanner(baselineApp.Services).ScanAsync());
+        AuthSurfaceAnalysisException baselineException = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(baselineApp.Services).ScanAsync());
+        Assert.Equal("policy-resolution-failed", baselineException.Code);
 
         await using WebApplication changedApp = BuildApplication(
             application => application.MapGet("/empty-fallback-change", () => Results.Ok())
                 .WithMetadata(new EmptyRequirementData()),
             fallbackPolicy: false);
         await changedApp.StartAsync();
-        AuthSurfaceVerificationResult result = AuthSurfaceVerifier.Compare(
-            await new AuthSurfaceScanner(changedApp.Services).ScanAsync(),
-            baseline);
-
-        Assert.Contains(result.Violations, item => item.Code == "endpoint-classification-changed");
-        Assert.Contains(result.Violations, item => item.Code == "endpoint-fallback-policy-changed");
+        AuthSurfaceAnalysisException changedException = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(changedApp.Services).ScanAsync());
+        Assert.Equal("policy-resolution-failed", changedException.Code);
     }
 
     [Fact]
@@ -480,7 +454,7 @@ public sealed class AuthorizationRegressionTests
     }
 
     [Fact]
-    public async Task EmptyRequirementDataWithoutFallbackRemainsUnprotected()
+    public async Task EmptyRequirementDataWithoutFallbackRepeatFailsPolicyConstruction()
     {
         await using WebApplication app = BuildApplication(
             application => application.MapGet("/empty-no-fallback-repeat", () => Results.Ok())
@@ -488,12 +462,10 @@ public sealed class AuthorizationRegressionTests
             fallbackPolicy: false);
         await app.StartAsync();
 
-        AuthSurfaceEndpoint endpoint = Assert.Single(
-            (await new AuthSurfaceScanner(app.Services).ScanAsync()).Endpoints
-                .Where(item => item.Route == "/empty-no-fallback-repeat"));
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(app.Services).ScanAsync());
 
-        Assert.Equal(AuthSurfaceAuthorizationKind.Unprotected, endpoint.AuthorizationKind);
-        Assert.False(endpoint.UsesFallbackPolicy);
+        Assert.Equal("policy-resolution-failed", exception.Code);
     }
 
     [Fact]
@@ -715,7 +687,7 @@ public sealed class AuthorizationRegressionTests
         return app;
     }
 
-    private static async Task<AuthorizationPolicy?> CombineFrameworkPolicyAsync(
+    private static async Task InvokeFrameworkAuthorizationMiddlewareAsync(
         WebApplication app,
         string route)
     {
@@ -725,10 +697,22 @@ public sealed class AuthorizationRegressionTests
                 .OfType<RouteEndpoint>()
                 .Where(item => AuthSurfaceCanonicalizer.NormalizeRoute(item.RoutePattern) == route));
 
-        return await AuthorizationPolicy.CombineAsync(
-            app.Services.GetRequiredService<IAuthorizationPolicyProvider>(),
-            endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>(),
-            endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+        var endpointBuilder = new RouteEndpointBuilder(_ => Task.CompletedTask, endpoint.RoutePattern, endpoint.Order);
+        foreach (object metadata in endpoint.Metadata)
+        {
+            endpointBuilder.Metadata.Add(metadata);
+        }
+
+        // The real middleware constructs the effective policy before it honors anonymous metadata.
+        // Add the marker only to keep valid-policy controls out of authentication/handler execution.
+        endpointBuilder.Metadata.Add(new AllowAnonymousAttribute());
+        var context = new DefaultHttpContext { RequestServices = app.Services };
+        context.SetEndpoint(endpointBuilder.Build());
+        var middleware = new AuthorizationMiddleware(
+            _ => Task.CompletedTask,
+            app.Services.GetRequiredService<IAuthorizationPolicyProvider>());
+
+        await middleware.Invoke(context);
     }
 
     [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class, AllowMultiple = true, Inherited = true)]

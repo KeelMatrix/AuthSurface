@@ -107,6 +107,33 @@ public sealed class DocumentationContractTests
     }
 
     [Fact]
+    public void FirstReleaseDocumentationDoesNotExposeUnpublishedImplementationHistory()
+    {
+        string root = FindRepositoryRoot();
+        string[] documents =
+        [
+            File.ReadAllText(Path.Combine(root, "README.md")),
+            File.ReadAllText(Path.Combine(root, "docs", "api-reference.md")),
+            File.ReadAllText(Path.Combine(root, "docs", "endpoint-identity.md")),
+            File.ReadAllText(Path.Combine(root, "src", "KeelMatrix.AuthSurface", "README.md")),
+        ];
+        string[] historicalPhrases =
+        [
+            "pre-release contract clarification",
+            "former sorted order",
+            "earlier build",
+            "regeneration caused by",
+        ];
+
+        Assert.All(documents, document => Assert.DoesNotContain(
+            historicalPhrases,
+            phrase => document.Contains(phrase, StringComparison.OrdinalIgnoreCase)));
+        Assert.Contains(documents, document => document.Contains("exact runtime type", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(documents, document => document.Contains("opaque", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(documents, document => document.Contains("route-policy-too-deep", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void DocumentedDiagnosticExamplesMatchVerifierOutput()
     {
         string root = FindRepositoryRoot();

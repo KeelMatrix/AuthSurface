@@ -107,10 +107,16 @@ try {
     @'
 using KeelMatrix.AuthSurface;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Infrastructure;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 
-static WebApplication BuildApplication(bool fallbackPolicy, bool includeNewEndpoint)
+static WebApplication BuildApplication(
+    bool fallbackPolicy,
+    bool includeNewEndpoint,
+    bool includeCorrectedCases = false,
+    bool includeEmptyRequirementData = false)
 {
     WebApplicationBuilder builder = WebApplication.CreateBuilder();
     builder.Services.AddAuthorization(options =>
@@ -128,6 +134,21 @@ static WebApplication BuildApplication(bool fallbackPolicy, bool includeNewEndpo
     if (includeNewEndpoint)
     {
         application.MapGet("/new", () => Results.Ok());
+    }
+    if (includeCorrectedCases)
+    {
+        application.MapGet("/literal/{{id}}", () => Results.Ok()).AllowAnonymous();
+        application.MapGet("/literal/{id}", () => Results.Ok()).AllowAnonymous();
+        application.MapGet("/derived-role", () => Results.Ok()).WithMetadata(
+            new AuthorizationPolicyBuilder()
+                .AddRequirements(new DerivedRolesRequirement("consumer-state", ["Admin"]))
+                .Build());
+    }
+    if (includeEmptyRequirementData)
+    {
+        application.MapGet("/empty-requirements", () => Results.Ok())
+            .WithMetadata(new EmptyRequirementData())
+            .AllowAnonymous();
     }
 
     return application;
@@ -170,12 +191,56 @@ try
         throw new InvalidOperationException("consumer smoke did not report the added endpoint");
     }
 
-    Console.WriteLine("consumer smoke passed: documented PackageReference install, runtime scan, explicit baseline creation, matching comparison, unprotected-policy failure, and structured endpoint-added failure");
+    await app.StopAsync();
+    await using WebApplication correctedApp = BuildApplication(fallbackPolicy: true, includeNewEndpoint: false, includeCorrectedCases: true);
+    await correctedApp.StartAsync();
+    AuthSurfaceScanner correctedScanner = new(
+        correctedApp.Services.GetServices<EndpointDataSource>(),
+        correctedApp.Services.GetRequiredService<IAuthorizationPolicyProvider>());
+    AuthSurfaceReport corrected = await correctedScanner.ScanAsync();
+    if (corrected.Endpoints.Count(endpoint => endpoint.Route is "/literal/{{id}}" or "/literal/{id}") != 2)
+    {
+        throw new InvalidOperationException("consumer smoke did not preserve literal-brace and parameter route identities");
+    }
+    AuthSurfaceEndpoint derivedRole = corrected.Endpoints.Single(endpoint => endpoint.Route == "/derived-role");
+    if (derivedRole.Roles.Count != 0 || !derivedRole.Requirements.Any(requirement => requirement.EndsWith("|opaque", StringComparison.Ordinal)))
+    {
+        throw new InvalidOperationException("consumer smoke did not preserve opaque derived requirement behavior");
+    }
+
+    await using WebApplication invalidPolicyApp = BuildApplication(fallbackPolicy: false, includeNewEndpoint: false, includeEmptyRequirementData: true);
+    await invalidPolicyApp.StartAsync();
+    AuthSurfaceScanner invalidPolicyScanner = new(
+        invalidPolicyApp.Services.GetServices<EndpointDataSource>(),
+        invalidPolicyApp.Services.GetRequiredService<IAuthorizationPolicyProvider>());
+    try
+    {
+        await invalidPolicyScanner.ScanAsync();
+        throw new InvalidOperationException("consumer smoke accepted empty requirement-data policy construction");
+    }
+    catch (AuthSurfaceAnalysisException exception) when (exception.Code == "policy-resolution-failed")
+    {
+    }
+
+    Console.WriteLine("consumer smoke passed: PackageReference install, baseline comparison, policy failures, literal-brace identity, and opaque derived-requirement behavior");
 }
 finally
 {
     File.Delete(baselinePath);
     await app.DisposeAsync();
+}
+
+sealed class EmptyRequirementData : Attribute, IAuthorizationRequirementData
+{
+    public IEnumerable<IAuthorizationRequirement> GetRequirements() => [];
+}
+
+sealed class DerivedRolesRequirement : RolesAuthorizationRequirement
+{
+    public DerivedRolesRequirement(string state, IEnumerable<string> allowedRoles)
+        : base(allowedRoles) => State = state;
+
+    public string State { get; }
 }
 '@ | Set-Content -LiteralPath (Join-Path $project 'Program.cs') -Encoding utf8
 

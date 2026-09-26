@@ -50,6 +50,27 @@ Initial pre-release implementation.
     & $contract -Root $root -Mode Main -Version '0.1.0'
     & $contract -Root $root -Mode Release -Version '0.1.0' -Tag 'v0.1.0'
 
+    $impossibleDate = $finalized.Replace('2026-09-21', '2026-02-30')
+    Set-Content -LiteralPath (Join-Path $root 'CHANGELOG.md') -Value $impossibleDate -Encoding utf8
+    $impossibleDateRejected = $false
+    try { & $contract -Root $root -Mode Main -Version '0.1.0' }
+    catch { $impossibleDateRejected = $true }
+    if (-not $impossibleDateRejected) { throw 'Main mode accepted an impossible calendar date.' }
+
+    $duplicate = $finalized + @'
+
+## [0.1.0] - 2026-09-22
+
+### Added
+
+- A second target entry is never unambiguous.
+'@
+    Set-Content -LiteralPath (Join-Path $root 'CHANGELOG.md') -Value $duplicate -Encoding utf8
+    $duplicateRejected = $false
+    try { & $contract -Root $root -Mode Main -Version '0.1.0' }
+    catch { $duplicateRejected = $true }
+    if (-not $duplicateRejected) { throw 'Main mode accepted duplicate target-version headings.' }
+
     $unfinishedFinalizedHeading = $finalized.Replace('### Added', '### Added').Replace('Provides deterministic', 'Pending release: provides deterministic')
     Set-Content -LiteralPath (Join-Path $root 'CHANGELOG.md') -Value $unfinishedFinalizedHeading -Encoding utf8
     $unfinishedFinalizedRejected = $false
@@ -74,7 +95,7 @@ Initial pre-release implementation.
     catch { $remediationRejected = $true }
     if (-not $remediationRejected) { throw 'Release mode accepted first-release remediation wording.' }
 
-    Write-Output 'Release contract tests passed: candidate, planned rejection, finalized main/release, unfinished finalized rejection, tag mismatch, version mismatch, and remediation rejection.'
+    Write-Output 'Release contract tests passed: candidate, finalized main/release, impossible-date and duplicate-heading rejection, unfinished finalized rejection, tag/version mismatch, and remediation rejection.'
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

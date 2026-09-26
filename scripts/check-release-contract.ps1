@@ -66,18 +66,33 @@ foreach ($readme in @($rootReadme, $packageReadme)) {
 }
 
 $headingPattern = "(?m)^##\s+\[?$([regex]::Escape($Version))\]?\b.*$"
-$heading = [regex]::Match($changelog, $headingPattern)
-if (-not $heading.Success) {
+$headings = @([regex]::Matches($changelog, $headingPattern))
+if ($headings.Count -eq 0) {
     throw "CHANGELOG.md has no entry for version '$Version'."
 }
+if ($headings.Count -ne 1) {
+    throw "CHANGELOG.md must contain exactly one entry for version '$Version'; found $($headings.Count)."
+}
+$heading = $headings[0]
 
 $nextHeading = [regex]::Match($changelog.Substring($heading.Index + $heading.Length), '(?m)^##\s+')
 $entryLength = if ($nextHeading.Success) { $nextHeading.Index } else { $changelog.Length - ($heading.Index + $heading.Length) }
 $entry = $changelog.Substring($heading.Index, $heading.Length + $entryLength)
 
 function Assert-FinalizedEntry([string] $HeadingValue, [string] $EntryText, [string] $ReleaseVersion) {
-    if ($HeadingValue -notmatch "^##\s+\[$([regex]::Escape($ReleaseVersion))\]\s+-\s+\d{4}-\d{2}-\d{2}\s*$") {
+    $dateMatch = [regex]::Match($HeadingValue, "^##\s+\[$([regex]::Escape($ReleaseVersion))\]\s+-\s+(?<date>\d{4}-\d{2}-\d{2})\s*$")
+    if (-not $dateMatch.Success) {
         throw "Release changelog entry must use '## [$ReleaseVersion] - YYYY-MM-DD'."
+    }
+
+    [datetime]$releaseDate = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact(
+        $dateMatch.Groups['date'].Value,
+        'yyyy-MM-dd',
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::None,
+        [ref]$releaseDate)) {
+        throw "Release changelog entry for '$ReleaseVersion' has an impossible calendar date."
     }
 
     if ($EntryText -match '(?i)\b(?:unreleased|planned|pre-release|pre release|not yet published|tbd|pending)\b') {

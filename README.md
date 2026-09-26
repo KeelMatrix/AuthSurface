@@ -75,6 +75,7 @@ The following table is the complete stable code set emitted by the shipping asse
 | `endpoint-classification-changed` | Baseline comparison |
 | `endpoint-default-policy-changed` | Baseline comparison |
 | `endpoint-fallback-policy-changed` | Baseline comparison |
+| `endpoint-limit` | Endpoint analysis |
 | `endpoint-policy-changed` | Baseline comparison |
 | `endpoint-removed` | Baseline comparison |
 | `endpoint-requirement-changed` | Baseline comparison |
@@ -82,7 +83,11 @@ The following table is the complete stable code set emitted by the shipping asse
 | `endpoint-route-changed` | Baseline comparison |
 | `endpoint-scheme-changed` | Baseline comparison |
 | `fallback-policy-endpoint` | Policy verification |
+| `metadata-limit` | Endpoint analysis |
 | `policy-resolution-failed` | Endpoint analysis |
+| `route-pattern-too-large` | Endpoint analysis |
+| `route-policy-too-complex` | Endpoint analysis |
+| `route-policy-too-deep` | Endpoint analysis |
 | `unprotected-endpoint` | Policy verification |
 | `unsupported-parameter-policy` | Endpoint analysis |
 <!-- END:DIAGNOSTIC-CODES -->
