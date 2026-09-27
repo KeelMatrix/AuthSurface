@@ -257,13 +257,13 @@ public sealed class IdentityContractTests
     {
         string fingerprint = AuthSurfaceCanonicalizer.Fingerprint([]);
         string firstIdentity = AuthSurfaceCanonicalizer.CreatePersistedIdentity(
-            "/same",
+            "/same/{id=x?}",
             AuthSurfaceCanonicalizer.CanonicalIdentity("/first", "GET"));
         string secondIdentity = AuthSurfaceCanonicalizer.CreatePersistedIdentity(
-            "/same",
+            "/same/{id=x?}",
             AuthSurfaceCanonicalizer.CanonicalIdentity("/second", "GET"));
         string endpoint(string identity) =>
-            "{\"route\":\"/same\",\"identity\":\"" + identity + "\",\"methods\":[\"GET\"]," +
+            "{\"route\":\"/same/{id=x?}\",\"identity\":\"" + identity + "\",\"methods\":[\"GET\"]," +
             "\"authorization\":\"ExplicitAnonymous\",\"policies\":[],\"roles\":[],\"schemes\":[]," +
             "\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false,\"requirements\":[]," +
             "\"requirementFingerprint\":\"" + fingerprint + "\"}";
@@ -276,6 +276,28 @@ public sealed class IdentityContractTests
             () => AuthSurfaceBaseline.Read(path));
 
         Assert.Equal("baseline-duplicate-identity", exception.Code);
+    }
+
+    [Fact]
+    public void BaselineRejectsPersistedIdentityThatDoesNotMatchParseableRoute()
+    {
+        string fingerprint = AuthSurfaceCanonicalizer.Fingerprint([]);
+        string identity = AuthSurfaceCanonicalizer.CreatePersistedIdentity(
+            "/same",
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/other", "GET"));
+        string json = "{\"schemaVersion\":1,\"endpoints\":[{\"route\":\"/same\",\"identity\":\"" + identity + "\",\"methods\":[\"GET\"]," +
+            "\"authorization\":\"ExplicitAnonymous\",\"policies\":[],\"roles\":[],\"schemes\":[]," +
+            "\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false,\"requirements\":[]," +
+            "\"requirementFingerprint\":\"" + fingerprint + "\"}]}";
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        File.WriteAllText(path, json);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-malformed", exception.Code);
     }
 
     [Fact]
@@ -396,6 +418,39 @@ public sealed class IdentityContractTests
     }
 
     [Fact]
+    public async Task CombinedAuthorizationValueMaterializationHonorsScanBudget()
+    {
+        int valuesPerCollection = AuthSurfaceCanonicalizer.MaximumNestedValueCount / 3 + 1;
+        string[] roles = Enumerable.Range(0, valuesPerCollection)
+            .Select(static index => "Role" + index.ToString(CultureInfo.InvariantCulture))
+            .ToArray();
+        string[] claims = Enumerable.Range(0, valuesPerCollection)
+            .Select(static index => "Claim" + index.ToString(CultureInfo.InvariantCulture))
+            .ToArray();
+        string[] schemes = Enumerable.Range(0, valuesPerCollection)
+            .Select(static index => "Scheme" + index.ToString(CultureInfo.InvariantCulture))
+            .ToArray();
+        var policy = new AuthorizationPolicyBuilder()
+            .RequireRole(roles)
+            .RequireClaim("scope", claims)
+            .AddAuthenticationSchemes(schemes)
+            .Build();
+        RouteEndpointBuilder builder = new(
+            _ => Task.CompletedTask,
+            RoutePatternFactory.Parse("/combined-values"),
+            order: 0);
+        builder.Metadata.Add(new HttpMethodMetadata(["GET"]));
+        builder.Metadata.Add(policy);
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([(RouteEndpoint)builder.Build()])],
+                new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("resource-limit", exception.Code);
+    }
+
+    [Fact]
     public async Task MethodExpansionCannotExceedOutputRecordBound()
     {
         RouteEndpointBuilder builder = new(
@@ -413,6 +468,22 @@ public sealed class IdentityContractTests
                 new AllowingPolicyProvider()).ScanAsync());
 
         Assert.Equal("endpoint-limit", exception.Code);
+    }
+
+    [Fact]
+    public async Task ProgrammaticHttpMethodConstraintFailsClosedAtNestedValueBound()
+    {
+        IParameterPolicy policy = new HttpMethodRouteConstraint(
+            Enumerable.Range(0, AuthSurfaceCanonicalizer.MaximumNestedValueCount + 1)
+                .Select(static index => "M" + index.ToString("D6", CultureInfo.InvariantCulture))
+                .ToArray());
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([BuildEndpoint(ProgrammaticPattern(policy))])],
+                new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("route-policy-too-complex", exception.Code);
     }
 
     [Fact]

@@ -39,7 +39,7 @@ internal static class AuthSurfaceParameterPolicyRegistry
         new(typeof(FileNameRouteConstraint), static (_, _) => "file"),
         new(typeof(FloatRouteConstraint), static (_, _) => "float"),
         new(typeof(GuidRouteConstraint), static (_, _) => "guid"),
-        new(typeof(HttpMethodRouteConstraint), static (policy, _) => RenderHttpMethodPolicy((HttpMethodRouteConstraint)policy)),
+        new(typeof(HttpMethodRouteConstraint), static (policy, _) => RenderHttpMethodPolicy((HttpMethodRouteConstraint)policy, null)),
         new(typeof(IntRouteConstraint), static (_, _) => "int"),
         new(typeof(LengthRouteConstraint), static (policy, _) =>
         {
@@ -80,17 +80,20 @@ internal static class AuthSurfaceParameterPolicyRegistry
     internal static string Render(
         IParameterPolicy policy,
         string parameterName,
-        AuthSurfaceCanonicalizationBudget budget)
-        => "programmatic:" + RenderUnwrapped(policy, parameterName, budget, depth: 0);
+        AuthSurfaceCanonicalizationBudget budget,
+        CancellationToken cancellationToken = default)
+        => "programmatic:" + RenderUnwrapped(policy, parameterName, budget, depth: 0, cancellationToken);
 
     private static string RenderUnwrapped(
         IParameterPolicy policy,
         string parameterName,
         AuthSurfaceCanonicalizationBudget budget,
-        int depth)
+        int depth,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(policy);
         ArgumentException.ThrowIfNullOrWhiteSpace(parameterName);
+        cancellationToken.ThrowIfCancellationRequested();
         budget.Visit();
         if (depth >= AuthSurfaceCanonicalizer.MaximumRoutePolicyDepth)
         {
@@ -104,7 +107,8 @@ internal static class AuthSurfaceParameterPolicyRegistry
                 parameterName,
                 "composite",
                 budget,
-                depth);
+                depth,
+                cancellationToken);
         }
 
         if (policy.GetType() == typeof(OptionalRouteConstraint))
@@ -114,7 +118,8 @@ internal static class AuthSurfaceParameterPolicyRegistry
                 parameterName,
                 "optional",
                 budget,
-                depth);
+                depth,
+                cancellationToken);
         }
 
         if (!Specs.TryGetValue(policy.GetType(), out AuthSurfaceParameterPolicySpec? spec))
@@ -122,17 +127,55 @@ internal static class AuthSurfaceParameterPolicyRegistry
             throw Unsupported(policy, parameterName);
         }
 
-        return spec.Render(policy, parameterName);
+        string rendered = spec.RuntimeType == typeof(HttpMethodRouteConstraint)
+            ? RenderHttpMethodPolicy((HttpMethodRouteConstraint)policy, budget, cancellationToken)
+            : spec.Render(policy, parameterName);
+        return rendered;
     }
 
-    private static string RenderHttpMethodPolicy(HttpMethodRouteConstraint policy) =>
-        "httpMethod(" + string.Join(
+    private static string RenderHttpMethodPolicy(
+        HttpMethodRouteConstraint policy,
+        AuthSurfaceCanonicalizationBudget? budget,
+        CancellationToken cancellationToken = default)
+    {
+        var methods = new List<string>();
+        int characters = 0;
+        foreach (string? method in policy.AllowedMethods)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            budget?.Visit();
+            if (string.IsNullOrWhiteSpace(method))
+            {
+                continue;
+            }
+
+            if (method.Length > AuthSurfaceCanonicalizer.MaximumMetadataValueLength)
+            {
+                throw AuthSurfaceCanonicalizer.ResourceLimit(
+                    "A programmatic HTTP-method constraint value exceeds the supported metadata value length.");
+            }
+
+            string normalized = method.Trim().ToUpperInvariant();
+            characters = checked(characters + normalized.Length);
+            if (characters > AuthSurfaceCanonicalizer.MaximumNestedValueCharacters)
+            {
+                throw AuthSurfaceCanonicalizer.ResourceLimit(
+                    $"A programmatic HTTP-method constraint exceeds the supported {AuthSurfaceCanonicalizer.MaximumNestedValueCharacters:N0}-character bound.");
+            }
+
+            if (methods.Count >= AuthSurfaceCanonicalizer.MaximumNestedValueCount)
+            {
+                throw AuthSurfaceCanonicalizer.ResourceLimit(
+                    $"A programmatic HTTP-method constraint exceeds the supported {AuthSurfaceCanonicalizer.MaximumNestedValueCount:N0}-value bound.");
+            }
+
+            methods.Add(normalized);
+        }
+
+        return "httpMethod(" + string.Join(
             ',',
-            policy.AllowedMethods
-                .Where(static method => !string.IsNullOrWhiteSpace(method))
-                .Select(static method => method.Trim().ToUpperInvariant())
-                .Distinct(StringComparer.Ordinal)
-                .OrderBy(static method => method, StringComparer.Ordinal)) + ")";
+            methods.Distinct(StringComparer.Ordinal).OrderBy(static method => method, StringComparer.Ordinal)) + ")";
+    }
 
     private static string RenderCompositePolicy(
         IEnumerable<IRouteConstraint> constraints,
@@ -142,18 +185,21 @@ internal static class AuthSurfaceParameterPolicyRegistry
             parameterName,
             name,
             new AuthSurfaceCanonicalizationBudget(),
-            depth: 0);
+            depth: 0,
+            cancellationToken: default);
 
     private static string RenderCompositePolicy(
         IEnumerable<IRouteConstraint> constraints,
         string parameterName,
         string name,
         AuthSurfaceCanonicalizationBudget budget,
-        int depth)
+        int depth,
+        CancellationToken cancellationToken)
     {
         var rendered = new List<string>();
         foreach (IRouteConstraint constraint in constraints)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (constraint is not IParameterPolicy parameterPolicy)
             {
                 throw new AuthSurfaceAnalysisException(
@@ -161,7 +207,7 @@ internal static class AuthSurfaceParameterPolicyRegistry
                     $"Route parameter '{parameterName}' uses a composite constraint with an unsupported member type '{AuthSurfaceCanonicalizer.StableTypeIdentity(constraint.GetType())}'; AuthSurface cannot produce a stable route identity.");
             }
 
-            rendered.Add(RenderUnwrapped(parameterPolicy, parameterName, budget, depth + 1));
+            rendered.Add(RenderUnwrapped(parameterPolicy, parameterName, budget, depth + 1, cancellationToken));
         }
 
         rendered.Sort(StringComparer.Ordinal);

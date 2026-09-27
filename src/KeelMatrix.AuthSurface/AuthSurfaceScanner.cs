@@ -46,6 +46,7 @@ public sealed class AuthSurfaceScanner
         options ??= new AuthSurfaceScanOptions();
         var endpoints = new List<AuthSurfaceEndpoint>();
         var identities = new HashSet<string>(StringComparer.Ordinal);
+        var scanBudget = new AuthSurfaceScanBudget();
         int inputEndpointCount = 0;
 
         foreach (EndpointDataSource dataSource in endpointDataSources)
@@ -59,13 +60,6 @@ public sealed class AuthSurfaceScanner
                         $"The scan input exceeds the supported {AuthSurfaceCanonicalizer.MaximumInputEndpointCount:N0}-endpoint bound.");
                 }
 
-                if (endpoints.Count >= AuthSurfaceCanonicalizer.MaximumEndpointCount)
-                {
-                    throw new AuthSurfaceAnalysisException(
-                        AuthSurfaceDiagnosticCode.EndpointLimit,
-                        $"The scan exceeds the supported {AuthSurfaceCanonicalizer.MaximumEndpointCount:N0}-endpoint bound.");
-                }
-
                 if (endpoint is not RouteEndpoint routeEndpoint)
                 {
                     continue;
@@ -76,7 +70,7 @@ public sealed class AuthSurfaceScanner
                     continue;
                 }
 
-                string route = AuthSurfaceCanonicalizer.NormalizeRoute(routeEndpoint.RoutePattern);
+                string route = AuthSurfaceCanonicalizer.NormalizeRoute(routeEndpoint.RoutePattern, cancellationToken);
                 if (options.ExcludedRoutePatterns.Contains(route))
                 {
                     continue;
@@ -90,9 +84,12 @@ public sealed class AuthSurfaceScanner
                         $"The scan would emit more than the supported {AuthSurfaceCanonicalizer.MaximumEndpointCount:N0}-endpoint bound.");
                 }
 
+                scanBudget.ConsumeMethods(methods, cancellationToken);
+
                 EndpointAuthorizationFacts facts = await ResolveAuthorizationAsync(
                     routeEndpoint,
                     route,
+                    scanBudget,
                     cancellationToken).ConfigureAwait(false);
 
                 foreach (string method in methods)
@@ -109,7 +106,7 @@ public sealed class AuthSurfaceScanner
                         facts.UsesFallbackPolicy,
                         facts.Requirements,
                         facts.RequirementFingerprint,
-                        AuthSurfaceCanonicalizer.CanonicalIdentity(routeEndpoint.RoutePattern, method));
+                        AuthSurfaceCanonicalizer.CanonicalIdentity(routeEndpoint.RoutePattern, method, cancellationToken));
 
                     if (!identities.Add(record.Identity))
                     {
@@ -157,6 +154,7 @@ public sealed class AuthSurfaceScanner
     private async Task<EndpointAuthorizationFacts> ResolveAuthorizationAsync(
         RouteEndpoint endpoint,
         string route,
+        AuthSurfaceScanBudget scanBudget,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<IAuthorizeData> authorizeData = endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>();
@@ -220,6 +218,11 @@ public sealed class AuthSurfaceScanner
                 throw AuthSurfaceCanonicalizer.ResourceLimit(
                     $"Endpoint '{route}' exceeds the supported effective authorization requirement bound of {AuthSurfaceCanonicalizer.MaximumEffectiveRequirementCount:N0} requirements.");
             }
+
+            if (effectivePolicy is not null)
+            {
+                scanBudget.ConsumeEffectiveRequirements(effectivePolicy.Requirements.Count);
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException && exception is not AuthSurfaceAnalysisException)
         {
@@ -253,19 +256,22 @@ public sealed class AuthSurfaceScanner
             splitCommaSeparated: false,
             trimValues: false,
             ignoreBlank: true,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken,
+            scanBudget: scanBudget);
         string[] rolesFromMetadata = AuthSurfaceCanonicalizer.BoundedDistinctValues(
             authorizeData.Select(static data => data.Roles),
             splitCommaSeparated: true,
             trimValues: true,
             ignoreBlank: true,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken,
+            scanBudget: scanBudget);
         string[] schemesFromMetadata = AuthSurfaceCanonicalizer.BoundedDistinctValues(
             authorizeData.Select(static data => data.AuthenticationSchemes),
             splitCommaSeparated: true,
             trimValues: true,
             ignoreBlank: true,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken,
+            scanBudget: scanBudget);
         IEnumerable<string> policyRoles = effectivePolicy is null
             ? []
             : effectivePolicy.Requirements
@@ -274,18 +280,23 @@ public sealed class AuthSurfaceScanner
                 .SelectMany(static requirement => requirement.AllowedRoles);
         string[] roles = AuthSurfaceCanonicalizer.BoundedDistinctValues(
             rolesFromMetadata.Cast<string?>().Concat(policyRoles),
-                splitCommaSeparated: false,
-                trimValues: false,
-                ignoreBlank: false,
-                cancellationToken: cancellationToken);
+            splitCommaSeparated: false,
+            trimValues: false,
+            ignoreBlank: false,
+            cancellationToken: cancellationToken,
+            scanBudget: scanBudget);
         string[] schemes = AuthSurfaceCanonicalizer.BoundedDistinctValues(
             schemesFromMetadata.Cast<string?>().Concat(effectivePolicy?.AuthenticationSchemes ?? []),
-                splitCommaSeparated: false,
-                trimValues: false,
-                ignoreBlank: false,
-                cancellationToken: cancellationToken);
-        string[] requirements = AuthSurfaceCanonicalizer.CanonicalizeRequirements(effectivePolicy, cancellationToken);
-        string fingerprint = AuthSurfaceCanonicalizer.Fingerprint(requirements);
+            splitCommaSeparated: false,
+            trimValues: false,
+            ignoreBlank: false,
+            cancellationToken: cancellationToken,
+            scanBudget: scanBudget);
+        string[] requirements = AuthSurfaceCanonicalizer.CanonicalizeRequirements(
+            effectivePolicy,
+            scanBudget,
+            cancellationToken);
+        string fingerprint = AuthSurfaceCanonicalizer.Fingerprint(requirements, cancellationToken);
 
         return new EndpointAuthorizationFacts(
             kind,
