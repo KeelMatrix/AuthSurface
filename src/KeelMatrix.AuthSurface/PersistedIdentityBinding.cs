@@ -37,6 +37,30 @@ internal sealed class PersistedIdentityBinding
     internal PersistedIdentityBinding WithMethod(string method) =>
         new(method, Segments, IdentityRoute);
 
+    internal PersistedIdentityBinding CanonicalizeForWriter()
+    {
+        var segments = new List<Segment>(Segments.Count);
+        foreach (Segment segment in Segments)
+        {
+            var parts = new List<Part>(segment.Parts.Count);
+            foreach (Part part in segment.Parts)
+            {
+                // RoutePattern never emits zero-width literal or separator parts. They
+                // render no bytes and therefore cannot be part of the writer's identity.
+                if (part is LiteralPart { Content.Length: 0 } or SeparatorPart { Content.Length: 0 })
+                {
+                    continue;
+                }
+
+                parts.Add(part);
+            }
+
+            segments.Add(new Segment(parts));
+        }
+
+        return new PersistedIdentityBinding(Method, segments, IdentityRoute);
+    }
+
     internal byte[] Serialize()
     {
         using var stream = new MemoryStream();

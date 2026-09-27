@@ -40,6 +40,7 @@ public sealed class AuthSurfaceBaseline
     /// <summary>Reads a bounded, validated baseline without modifying the file.</summary>
     /// <param name="path">The local baseline path.</param>
     /// <param name="maximumBytes">The maximum accepted file size.</param>
+    /// <remarks>Bound `v1:` identities are accepted only when re-encoding the decoded binding with the exact writer encoder reproduces the supplied token byte-for-byte. Non-canonical identities fail closed as <c>baseline-malformed</c>; the input file is never rewritten.</remarks>
     /// <returns>The validated baseline.</returns>
     public static AuthSurfaceBaseline Read(string path, int maximumBytes = 1_048_576)
     {

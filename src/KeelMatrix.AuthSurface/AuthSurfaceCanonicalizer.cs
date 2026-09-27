@@ -261,11 +261,7 @@ internal static class AuthSurfaceCanonicalizer
 
         binding = binding.WithIdentityRoute(renderedIdentity[..renderedIdentity.LastIndexOf(IdentityMethodSeparator)]);
 
-        string encodedBinding = Convert.ToBase64String(binding.Serialize())
-            .TrimEnd('=')
-            .Replace("+", "-", StringComparison.Ordinal)
-            .Replace("/", "_", StringComparison.Ordinal);
-        return EncodePersistedIdentity(route, PersistedIdentityBinding.Prefix + encodedBinding);
+        return EncodePersistedIdentity(route, EncodePersistedIdentityBinding(binding));
     }
 
     internal static string ReadPersistedIdentity(string persistedIdentity, string route, string method)
@@ -302,6 +298,14 @@ internal static class AuthSurfaceCanonicalizer
 
             string identityToken = payload[(separator + 1)..];
             ValidateRouteShape(route, "route");
+            if (!string.Equals(
+                    EncodePersistedIdentity(route, identityToken),
+                    persistedIdentity,
+                    StringComparison.Ordinal))
+            {
+                throw new FormatException("The persisted identity is not the canonical writer encoding.");
+            }
+
             if (identityToken.StartsWith(PersistedIdentityBinding.Prefix, StringComparison.Ordinal))
             {
                 string encodedBinding = identityToken[PersistedIdentityBinding.Prefix.Length..];
@@ -316,6 +320,7 @@ internal static class AuthSurfaceCanonicalizer
                     .Replace("-", "+", StringComparison.Ordinal)
                     .Replace("_", "/", StringComparison.Ordinal) + new string('=', bindingPadding);
                 PersistedIdentityBinding binding = PersistedIdentityBinding.Deserialize(Convert.FromBase64String(paddedBinding));
+                binding = binding.CanonicalizeForWriter();
                 if (!string.Equals(binding.Method, method, StringComparison.Ordinal))
                 {
                     throw new FormatException("The persisted identity binding is not bound to the endpoint HTTP method.");
@@ -335,6 +340,14 @@ internal static class AuthSurfaceCanonicalizer
 
                 string identity = renderedIdentityRoute + IdentityMethodSeparator + method.ToUpperInvariant();
                 ValidateIdentityKey(identity, method);
+                string canonicalPersistedIdentity = EncodePersistedIdentity(
+                    route,
+                    EncodePersistedIdentityBinding(binding.WithIdentityRoute(renderedIdentityRoute)));
+                if (!string.Equals(canonicalPersistedIdentity, persistedIdentity, StringComparison.Ordinal))
+                {
+                    throw new FormatException("The persisted identity binding is not the canonical writer encoding.");
+                }
+
                 return identity;
             }
 
@@ -454,10 +467,7 @@ internal static class AuthSurfaceCanonicalizer
     {
         string payload = route + PersistedIdentitySeparator + identityToken;
         byte[] bytes = Encoding.UTF8.GetBytes(payload);
-        string encoded = Convert.ToBase64String(bytes)
-            .TrimEnd('=')
-            .Replace("+", "-", StringComparison.Ordinal)
-            .Replace("/", "_", StringComparison.Ordinal);
+        string encoded = EncodeBase64Url(bytes);
         string result = PersistedIdentityPrefix + encoded;
         if (result.Length > MaximumPersistedIdentityLength)
         {
@@ -466,6 +476,17 @@ internal static class AuthSurfaceCanonicalizer
 
         return result;
     }
+
+    private static string EncodePersistedIdentityBinding(PersistedIdentityBinding binding)
+    {
+        PersistedIdentityBinding canonicalBinding = binding.CanonicalizeForWriter();
+        return PersistedIdentityBinding.Prefix + EncodeBase64Url(canonicalBinding.Serialize());
+    }
+
+    private static string EncodeBase64Url(byte[] bytes) => Convert.ToBase64String(bytes)
+        .TrimEnd('=')
+        .Replace("+", "-", StringComparison.Ordinal)
+        .Replace("/", "_", StringComparison.Ordinal);
 
     private static PersistedIdentityBinding CreatePersistedIdentityBinding(
         RoutePattern pattern,

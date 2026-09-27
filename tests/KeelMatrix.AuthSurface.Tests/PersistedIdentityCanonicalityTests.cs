@@ -1,0 +1,382 @@
+using System.Buffers.Binary;
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using KeelMatrix.AuthSurface;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Constraints;
+using Microsoft.AspNetCore.Routing.Patterns;
+using Xunit;
+
+namespace KeelMatrix.AuthSurface.Tests;
+
+public sealed class PersistedIdentityCanonicalityTests
+{
+    [Fact]
+    public async Task NonCanonicalBindingRepresentationsAreRejectedWithoutRewriting()
+    {
+        RoutePattern pattern = RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("item")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "id",
+                        "x?",
+                        RoutePatternParameterKind.Standard,
+                        [RoutePatternFactory.ParameterPolicy(new IntRouteConstraint())]),
+                ]),
+            ]);
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        string json = File.ReadAllText(path);
+        using JsonDocument document = JsonDocument.Parse(json);
+        string persistedIdentity = document.RootElement
+            .GetProperty("endpoints")[0]
+            .GetProperty("identity")
+            .GetString()!;
+        string identityPayload = DecodeUtf8(persistedIdentity[3..]);
+        Assert.StartsWith("b1:", identityPayload[(identityPayload.IndexOf('\u001e') + 1)..], StringComparison.Ordinal);
+
+        foreach ((string name, string mutatedIdentity) in Mutations(persistedIdentity))
+        {
+            string mutatedJson = json.Replace(persistedIdentity, mutatedIdentity, StringComparison.Ordinal);
+            File.WriteAllText(path, mutatedJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            byte[] before = File.ReadAllBytes(path);
+
+            AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+                () => AuthSurfaceBaseline.Read(path));
+
+            Assert.Equal("baseline-malformed", exception.Code);
+            Assert.Equal(before, File.ReadAllBytes(path));
+            Assert.False(string.Equals(persistedIdentity, mutatedIdentity, StringComparison.Ordinal), name);
+        }
+    }
+
+    [Fact]
+    public async Task CanonicalWriterTokensRoundTripAcrossBoundedMutationFuzz()
+    {
+        RoutePattern[] patterns =
+        [
+            ProgrammaticPatternWithDefault(new IntRouteConstraint(), "x?"),
+            ProgrammaticPatternWithDefault(
+                new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+                    "[)]:payload",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+                    System.Text.RegularExpressions.RegexOptions.Compiled)),
+                "foo/bar"),
+            ProgrammaticPatternWithDefault(
+                new OptionalRouteConstraint(new CompositeRouteConstraint([
+                    new IntRouteConstraint(),
+                    new MinRouteConstraint(2),
+                ])),
+                "x?"),
+            CatchAllPattern("x?/foo"),
+        ];
+
+        using var directory = new TemporaryDirectory();
+        int index = 0;
+        foreach (RoutePattern pattern in patterns)
+        {
+            AuthSurfaceReport report = await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+                new AllowingPolicyProvider()).ScanAsync();
+            AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+            string path = Path.Combine(directory.Path, (++index).ToString(CultureInfo.InvariantCulture), "authsurface.json");
+            AuthSurfaceBaseline.Create(report, path, overwrite: false);
+
+            AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+            Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid, endpoint.Route);
+
+            string json = File.ReadAllText(path);
+            using JsonDocument document = JsonDocument.Parse(json);
+            string persistedIdentity = document.RootElement
+                .GetProperty("endpoints")[0]
+                .GetProperty("identity")
+                .GetString()!;
+            Assert.StartsWith("b1:", DecodeUtf8(persistedIdentity[3..]).Split('\u001e')[1], StringComparison.Ordinal);
+
+            foreach (string mutatedIdentity in BoundedMutations(persistedIdentity))
+            {
+                AssertMutationRejected(path, json, persistedIdentity, mutatedIdentity);
+            }
+        }
+    }
+
+    private static IEnumerable<(string Name, string Identity)> Mutations(string persistedIdentity)
+    {
+        yield return ("outer-unused-pad-bits", MutateOuterUnusedPadBits(persistedIdentity));
+        yield return ("inner-unused-pad-bits", MutateInnerUnusedPadBits(persistedIdentity));
+        yield return ("overlong-method-length", RewriteBinding(persistedIdentity, MutateOverlongMethodLength));
+        yield return ("redundant-empty-literal", RewriteBinding(persistedIdentity, MutateRedundantEmptyLiteral));
+    }
+
+    private static string MutateOuterUnusedPadBits(string persistedIdentity)
+    {
+        string encoded = persistedIdentity[3..];
+        return "v1:" + encoded[..^1] + ShiftUnusedBits(encoded[^1]);
+    }
+
+    private static string MutateInnerUnusedPadBits(string persistedIdentity)
+    {
+        string payload = DecodeUtf8(persistedIdentity[3..]);
+        int separator = payload.IndexOf('\u001e');
+        Assert.True(separator > 0);
+        string identityToken = payload[(separator + 1)..];
+        Assert.StartsWith(PersistedIdentityBinding.Prefix, identityToken, StringComparison.Ordinal);
+
+        string encodedBinding = identityToken[PersistedIdentityBinding.Prefix.Length..];
+        string mutatedToken = PersistedIdentityBinding.Prefix + encodedBinding[..^1] + ShiftUnusedBits(encodedBinding[^1]);
+        return "v1:" + EncodeBase64Url(Encoding.UTF8.GetBytes(payload[..(separator + 1)] + mutatedToken));
+    }
+
+    private static string RewriteBinding(string persistedIdentity, Func<byte[], byte[]> mutate)
+    {
+        string payload = DecodeUtf8(persistedIdentity[3..]);
+        int separator = payload.IndexOf('\u001e');
+        Assert.True(separator > 0);
+        string identityToken = payload[(separator + 1)..];
+        Assert.StartsWith(PersistedIdentityBinding.Prefix, identityToken, StringComparison.Ordinal);
+
+        string encodedBinding = identityToken[PersistedIdentityBinding.Prefix.Length..];
+        byte[] binding = DecodeBase64Url(encodedBinding);
+        string mutatedToken = PersistedIdentityBinding.Prefix + EncodeBase64Url(mutate(binding));
+        string mutatedPayload = payload[..(separator + 1)] + mutatedToken;
+        return "v1:" + EncodeBase64Url(Encoding.UTF8.GetBytes(mutatedPayload));
+    }
+
+    private static IEnumerable<string> BoundedMutations(string persistedIdentity)
+    {
+        yield return persistedIdentity + "=";
+        yield return "v1:" + persistedIdentity[3..^1] + "+";
+        yield return RewriteInnerToken(persistedIdentity, static encoded => encoded + "=");
+        yield return RewriteInnerToken(persistedIdentity, static encoded => encoded[..^1] + "/");
+        yield return RewriteBinding(persistedIdentity, static binding => binding[..^1]);
+        yield return RewriteBinding(persistedIdentity, static binding =>
+        {
+            byte[] mutated = binding.ToArray();
+            mutated[4] = 2;
+            return mutated;
+        });
+        yield return RewriteBinding(persistedIdentity, MutateUnknownPartKind);
+
+        string payload = DecodeUtf8(persistedIdentity[3..]);
+        string identityToken = payload[(payload.IndexOf('\u001e') + 1)..];
+        byte[] binding = DecodeBase64Url(identityToken[PersistedIdentityBinding.Prefix.Length..]);
+        for (int seed = 0; seed < 32; seed++)
+        {
+            int offset = 5 + ((seed * 7919) % (binding.Length - 5));
+            byte[] mutated = binding.ToArray();
+            mutated[offset] ^= (byte)(1 << (seed % 8));
+            yield return RewriteBinding(persistedIdentity, _ => mutated);
+        }
+    }
+
+    private static string RewriteInnerToken(string persistedIdentity, Func<string, string> mutate)
+    {
+        string payload = DecodeUtf8(persistedIdentity[3..]);
+        int separator = payload.IndexOf('\u001e');
+        string identityToken = payload[(separator + 1)..];
+        string encodedBinding = identityToken[PersistedIdentityBinding.Prefix.Length..];
+        string mutatedToken = PersistedIdentityBinding.Prefix + mutate(encodedBinding);
+        return "v1:" + EncodeBase64Url(Encoding.UTF8.GetBytes(payload[..(separator + 1)] + mutatedToken));
+    }
+
+    private static byte[] MutateUnknownPartKind(byte[] binding)
+    {
+        int offset = 5;
+        SkipString(binding, ref offset);
+        SkipString(binding, ref offset);
+        int partOffset = checked(offset + sizeof(int) + sizeof(int));
+        byte[] mutated = binding.ToArray();
+        mutated[partOffset] = 0xff;
+        return mutated;
+    }
+
+    private static void AssertMutationRejected(
+        string path,
+        string json,
+        string canonicalIdentity,
+        string mutatedIdentity)
+    {
+        Assert.NotEqual(canonicalIdentity, mutatedIdentity);
+        File.WriteAllText(
+            path,
+            json.Replace(canonicalIdentity, mutatedIdentity, StringComparison.Ordinal),
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        byte[] before = File.ReadAllBytes(path);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-malformed", exception.Code);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    private static byte[] MutateOverlongMethodLength(byte[] binding)
+    {
+        int offset = 5;
+        int methodLengthStart = offset;
+        int methodByteLength = Read7BitEncodedInt(binding, ref offset);
+        int methodEnd = checked(offset + methodByteLength);
+        Assert.Equal(3, methodByteLength);
+
+        var mutated = new List<byte>(binding.Length + 1);
+        mutated.AddRange(binding[..methodLengthStart]);
+        mutated.Add(0x83);
+        mutated.Add(0x00);
+        mutated.AddRange(binding[methodEnd..]);
+        return mutated.ToArray();
+    }
+
+    private static byte[] MutateRedundantEmptyLiteral(byte[] binding)
+    {
+        int offset = 5;
+        SkipString(binding, ref offset);
+        SkipString(binding, ref offset);
+        int segmentCount = ReadInt32(binding, offset);
+        Assert.True(segmentCount > 0);
+        int partCountOffset = checked(offset + sizeof(int));
+        int partCount = ReadInt32(binding, partCountOffset);
+        Assert.True(partCount > 0);
+
+        int partOffset = checked(partCountOffset + sizeof(int));
+        Assert.Equal(1, binding[partOffset]);
+        partOffset++;
+        SkipString(binding, ref partOffset);
+
+        byte[] mutated = new byte[binding.Length + 2];
+        Buffer.BlockCopy(binding, 0, mutated, 0, partCountOffset);
+        BinaryPrimitives.WriteInt32LittleEndian(mutated.AsSpan(partCountOffset), checked(partCount + 1));
+        int insertOffset = partOffset;
+        Buffer.BlockCopy(binding, partCountOffset + sizeof(int), mutated, partCountOffset + sizeof(int), insertOffset - partCountOffset - sizeof(int));
+        mutated[insertOffset] = 1;
+        mutated[insertOffset + 1] = 0;
+        Buffer.BlockCopy(binding, insertOffset, mutated, insertOffset + 2, binding.Length - insertOffset);
+        return mutated;
+    }
+
+    private static string ShiftUnusedBits(char character)
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        int value = alphabet.IndexOf(character);
+        Assert.True(value >= 0);
+        int shifted = (value & 0b110000) | ((value + 1) & 0b001111);
+        if (shifted == value)
+        {
+            shifted = (value & 0b110000) | ((value - 1) & 0b001111);
+        }
+
+        return alphabet[shifted].ToString();
+    }
+
+    private static string DecodeUtf8(string encoded) => Encoding.UTF8.GetString(DecodeBase64Url(encoded));
+
+    private static byte[] DecodeBase64Url(string encoded)
+    {
+        string padded = encoded.Replace('-', '+').Replace('_', '/') + new string('=', (4 - encoded.Length % 4) % 4);
+        return Convert.FromBase64String(padded);
+    }
+
+    private static string EncodeBase64Url(byte[] bytes) => Convert.ToBase64String(bytes)
+        .TrimEnd('=')
+        .Replace('+', '-')
+        .Replace('/', '_');
+
+    private static void SkipString(byte[] bytes, ref int offset)
+    {
+        int length = Read7BitEncodedInt(bytes, ref offset);
+        offset = checked(offset + length);
+    }
+
+    private static int Read7BitEncodedInt(byte[] bytes, ref int offset)
+    {
+        int result = 0;
+        int shift = 0;
+        while (shift < 35)
+        {
+            byte current = bytes[offset++];
+            result |= (current & 0x7f) << shift;
+            if ((current & 0x80) == 0)
+            {
+                return result;
+            }
+
+            shift += 7;
+        }
+
+        throw new FormatException("The test binding length is invalid.");
+    }
+
+    private static int ReadInt32(byte[] bytes, int offset) => BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(offset));
+
+    private static RouteEndpoint BuildEndpoint(RoutePattern pattern)
+    {
+        RouteEndpointBuilder builder = new(_ => Task.CompletedTask, pattern, order: 0);
+        builder.Metadata.Add(new HttpMethodMetadata(["GET"]));
+        builder.Metadata.Add(new Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute());
+        return (RouteEndpoint)builder.Build();
+    }
+
+    private static RoutePattern ProgrammaticPatternWithDefault(IParameterPolicy policy, object defaultValue) =>
+        RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("item")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "id",
+                        defaultValue,
+                        RoutePatternParameterKind.Standard,
+                        [RoutePatternFactory.ParameterPolicy(policy)]),
+                ]),
+            ]);
+
+    private static RoutePattern CatchAllPattern(object defaultValue) =>
+        RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("files")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "path",
+                        defaultValue,
+                        RoutePatternParameterKind.CatchAll,
+                        [RoutePatternFactory.ParameterPolicy(new IntRouteConstraint())]),
+                ]),
+            ]);
+
+    private sealed class AllowingPolicyProvider : IAuthorizationPolicyProvider
+    {
+        public bool AllowsCachingPolicies => true;
+
+        public Task<AuthorizationPolicy> GetDefaultPolicyAsync() => Task.FromResult(new AuthorizationPolicyBuilder().Build());
+
+        public Task<AuthorizationPolicy?> GetFallbackPolicyAsync() => Task.FromResult<AuthorizationPolicy?>(null);
+
+        public Task<AuthorizationPolicy?> GetPolicyAsync(string policyName) => Task.FromResult<AuthorizationPolicy?>(null);
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public TemporaryDirectory()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "authsurface-canonicality-tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose() => Directory.Delete(Path, recursive: true);
+    }
+}

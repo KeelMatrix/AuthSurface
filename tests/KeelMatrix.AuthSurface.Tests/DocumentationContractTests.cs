@@ -59,6 +59,8 @@ public sealed class DocumentationContractTests
 
         Assert.Contains("length-delimited binding", documentation, StringComparison.Ordinal);
         Assert.Contains("same canonical renderer", documentation, StringComparison.Ordinal);
+        Assert.Contains("byte-for-byte", documentation, StringComparison.Ordinal);
+        Assert.Contains("non-minimal length encodings", documentation, StringComparison.Ordinal);
         Assert.Contains("ambiguous legacy tokens fail closed", documentation, StringComparison.Ordinal);
         Assert.Contains("b1:<base64url-no-padding(binding)>", documentation, StringComparison.Ordinal);
         Assert.Contains("fixed ASCII magic `ASIB`", documentation, StringComparison.Ordinal);
