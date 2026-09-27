@@ -16,7 +16,8 @@ public sealed class AuthSurfaceEndpoint
         bool usesFallbackPolicy,
         IEnumerable<string> requirements,
         string requirementFingerprint,
-        string? identity = null)
+        string? identity = null,
+        string? persistedIdentity = null)
     {
         Route = route;
         Methods = ImmutableArray.Create(method);
@@ -29,11 +30,13 @@ public sealed class AuthSurfaceEndpoint
         Requirements = requirements.ToImmutableArray();
         RequirementFingerprint = requirementFingerprint;
         this.identity = identity;
+        this.persistedIdentity = persistedIdentity;
     }
 
     private readonly string? identity;
+    private readonly string? persistedIdentity;
 
-    /// <summary>Gets the normalized display route pattern. Durable identity uses a bounded canonical representation that preserves textual-versus-programmatic policy provenance plus the HTTP method; persisted unparseable displays use exact marker-boundary validation rather than marker stripping.</summary>
+    /// <summary>Gets the normalized display route pattern. Durable identity uses a bounded canonical representation that preserves textual-versus-programmatic policy provenance plus the HTTP method; persisted bindings are validated by re-rendering the writer's lossless route-pattern data.</summary>
     public string Route { get; }
 
     /// <summary>Gets the sorted HTTP method contract. A method-less endpoint uses <c>*</c>.</summary>
@@ -68,6 +71,8 @@ public sealed class AuthSurfaceEndpoint
 
     internal string Identity => identity ?? AuthSurfaceCanonicalizer.CanonicalIdentity(Route, Method);
 
+    internal string? PersistedIdentity => persistedIdentity;
+
     internal AuthSurfaceEndpoint Clone() => new(
         Route,
         Method,
@@ -79,5 +84,6 @@ public sealed class AuthSurfaceEndpoint
         UsesFallbackPolicy,
         Requirements,
         RequirementFingerprint,
-        Identity);
+        Identity,
+        PersistedIdentity);
 }

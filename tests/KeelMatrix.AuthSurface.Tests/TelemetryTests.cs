@@ -2,9 +2,9 @@ using System.Diagnostics;
 using System.Text.Json;
 using AuthSurface.FixtureApp;
 using KeelMatrix.AuthSurface;
-using TelemetryProbeProgram = KeelMatrix.AuthSurface.TelemetryProbe.Program;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
+using TelemetryProbeProgram = KeelMatrix.AuthSurface.TelemetryProbe.Program;
 
 namespace KeelMatrix.AuthSurface.Tests;
 

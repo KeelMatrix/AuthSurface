@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace KeelMatrix.AuthSurface;
@@ -98,6 +99,36 @@ public sealed class AuthSurfaceScanner
                 foreach (string method in methods)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    string identity = AuthSurfaceCanonicalizer.CanonicalIdentity(
+                        routeEndpoint.RoutePattern,
+                        method,
+                        scanBudget,
+                        cancellationToken);
+                    string? persistedIdentity;
+                    try
+                    {
+                        persistedIdentity = string.Equals(
+                            identity,
+                            AuthSurfaceCanonicalizer.CanonicalIdentity(route, method, cancellationToken),
+                            StringComparison.Ordinal)
+                            ? null
+                            : AuthSurfaceCanonicalizer.CreatePersistedIdentity(
+                                routeEndpoint.RoutePattern,
+                                route,
+                                method,
+                                identity,
+                                cancellationToken);
+                    }
+                    catch (Exception exception) when (exception is RoutePatternException or AuthSurfaceAnalysisException or FormatException or InvalidOperationException or ArgumentException)
+                    {
+                        persistedIdentity = AuthSurfaceCanonicalizer.CreatePersistedIdentity(
+                            routeEndpoint.RoutePattern,
+                            route,
+                            method,
+                            identity,
+                            cancellationToken);
+                    }
+
                     var record = new AuthSurfaceEndpoint(
                         route,
                         method,
@@ -109,11 +140,8 @@ public sealed class AuthSurfaceScanner
                         facts.UsesFallbackPolicy,
                         facts.Requirements,
                         facts.RequirementFingerprint,
-                        AuthSurfaceCanonicalizer.CanonicalIdentity(
-                            routeEndpoint.RoutePattern,
-                            method,
-                            scanBudget,
-                            cancellationToken));
+                        identity,
+                        persistedIdentity);
 
                     if (!identities.Add(record.Identity))
                     {

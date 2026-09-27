@@ -669,11 +669,17 @@ public sealed class AuthSurfaceBaseline
             document.UsesFallbackPolicy,
             document.Requirements,
             calculatedFingerprint,
-            identity);
+            identity,
+            document.Identity);
     }
 
     private static string? GetPersistedIdentity(AuthSurfaceEndpoint endpoint)
     {
+        if (endpoint.PersistedIdentity is not null)
+        {
+            return endpoint.PersistedIdentity;
+        }
+
         try
         {
             if (string.Equals(
@@ -688,7 +694,7 @@ public sealed class AuthSurfaceBaseline
         {
             // The lossless identity token below is the supported persistence path for
             // programmatic patterns whose readable route cannot be parsed as route syntax.
-            // The reader validates this token with exact policy-boundary marker handling.
+            // The reader validates this token by re-rendering its route-pattern binding.
         }
 
         return AuthSurfaceCanonicalizer.CreatePersistedIdentity(endpoint.Route, endpoint.Identity);

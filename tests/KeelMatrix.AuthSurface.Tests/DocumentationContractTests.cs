@@ -57,6 +57,14 @@ public sealed class DocumentationContractTests
             shipped.OrderBy(static pair => pair.Key, StringComparer.Ordinal),
             documented.OrderBy(static pair => pair.Key, StringComparer.Ordinal));
 
+        Assert.Contains("length-delimited binding", documentation, StringComparison.Ordinal);
+        Assert.Contains("same canonical renderer", documentation, StringComparison.Ordinal);
+        Assert.Contains("ambiguous legacy tokens fail closed", documentation, StringComparison.Ordinal);
+        Assert.Contains("b1:<base64url-no-padding(binding)>", documentation, StringComparison.Ordinal);
+        Assert.Contains("fixed ASCII magic `ASIB`", documentation, StringComparison.Ordinal);
+        Assert.DoesNotContain("FindUnparseablePolicyBoundaries", documentation, StringComparison.Ordinal);
+        Assert.DoesNotContain("at each route character", documentation, StringComparison.Ordinal);
+
         AuthSurfaceAnalysisException exception = Assert.Throws<AuthSurfaceAnalysisException>(
             () => AuthSurfaceCanonicalizer.NormalizeRoute(ProgrammaticPattern(new UnsupportedParameterPolicy())));
         string unsupportedCode = AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy.GetValue();

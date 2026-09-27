@@ -46,7 +46,12 @@ internal static class AuthSurfaceCanonicalizer
     {
         ArgumentNullException.ThrowIfNull(pattern);
         var budget = new AuthSurfaceCanonicalizationBudget(scanBudget);
-        string route = RenderPattern(pattern, false, false, true, budget, cancellationToken).Trim();
+        PersistedIdentityBinding binding = CreatePersistedIdentityBinding(pattern, string.Empty, budget, cancellationToken);
+        string route = RenderPersistedIdentityBinding(
+            binding,
+            canonicalize: false,
+            canonicalizationBudget: budget,
+            cancellationToken: cancellationToken).Trim();
         if (route.StartsWith("~/", StringComparison.Ordinal))
         {
             route = route[1..];
@@ -199,13 +204,14 @@ internal static class AuthSurfaceCanonicalizer
     {
         ArgumentNullException.ThrowIfNull(pattern);
         ArgumentNullException.ThrowIfNull(method);
-        return RenderPattern(
-            pattern,
-            caseFoldRouteComponents: true,
-            canonicalizePolicies: true,
-            escapeRouteSyntax: true,
-            new AuthSurfaceCanonicalizationBudget(scanBudget),
-            cancellationToken) + IdentityMethodSeparator + method.ToUpperInvariant();
+        var budget = new AuthSurfaceCanonicalizationBudget(scanBudget);
+        PersistedIdentityBinding binding = CreatePersistedIdentityBinding(pattern, method, budget, cancellationToken);
+        return RenderPersistedIdentityBinding(
+            binding,
+            canonicalize: true,
+            canonicalizationBudget: budget,
+            cancellationToken: cancellationToken) +
+            IdentityMethodSeparator + method.ToUpperInvariant();
     }
 
     internal static string CreatePersistedIdentity(string route, string identity)
@@ -214,20 +220,52 @@ internal static class AuthSurfaceCanonicalizer
         ArgumentNullException.ThrowIfNull(identity);
         ValidateRouteShape(route, "route");
         ValidateIdentityKey(identity, identity[(identity.LastIndexOf(IdentityMethodSeparator) + 1)..]);
+        return EncodePersistedIdentity(route, identity);
+    }
 
-        string payload = route + PersistedIdentitySeparator + identity;
-        byte[] bytes = Encoding.UTF8.GetBytes(payload);
-        string encoded = Convert.ToBase64String(bytes)
+    internal static string CreatePersistedIdentity(
+        RoutePattern pattern,
+        string route,
+        string method,
+        string identity,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        ArgumentNullException.ThrowIfNull(route);
+        ArgumentNullException.ThrowIfNull(method);
+        ArgumentNullException.ThrowIfNull(identity);
+
+        PersistedIdentityBinding binding = CreatePersistedIdentityBinding(
+            pattern,
+            method,
+            new AuthSurfaceCanonicalizationBudget(),
+            cancellationToken);
+        string renderedRoute = RenderPersistedIdentityBinding(
+            binding,
+            canonicalize: false,
+            canonicalizationBudget: new AuthSurfaceCanonicalizationBudget(),
+            cancellationToken: cancellationToken);
+        string renderedIdentity = RenderPersistedIdentityBinding(
+            binding,
+            canonicalize: true,
+            canonicalizationBudget: new AuthSurfaceCanonicalizationBudget(),
+            cancellationToken: cancellationToken) +
+            IdentityMethodSeparator + method.ToUpperInvariant();
+        if (!string.Equals(renderedRoute, route, StringComparison.Ordinal) ||
+            !string.Equals(renderedIdentity, identity, StringComparison.Ordinal))
+        {
+            throw new AuthSurfaceAnalysisException(
+                AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
+                "The route pattern cannot be represented by the persisted identity binding.");
+        }
+
+        binding = binding.WithIdentityRoute(renderedIdentity[..renderedIdentity.LastIndexOf(IdentityMethodSeparator)]);
+
+        string encodedBinding = Convert.ToBase64String(binding.Serialize())
             .TrimEnd('=')
             .Replace("+", "-", StringComparison.Ordinal)
             .Replace("/", "_", StringComparison.Ordinal);
-        string result = PersistedIdentityPrefix + encoded;
-        if (result.Length > MaximumPersistedIdentityLength)
-        {
-            throw RoutePatternTooLarge();
-        }
-
-        return result;
+        return EncodePersistedIdentity(route, PersistedIdentityBinding.Prefix + encodedBinding);
     }
 
     internal static string ReadPersistedIdentity(string persistedIdentity, string route, string method)
@@ -262,11 +300,47 @@ internal static class AuthSurfaceCanonicalizer
                 throw new FormatException("The persisted identity route does not match the endpoint route.");
             }
 
-            string identity = payload[(separator + 1)..];
+            string identityToken = payload[(separator + 1)..];
             ValidateRouteShape(route, "route");
-            ValidateIdentityKey(identity, method);
-            ValidateIdentityRouteBinding(route, method, identity);
-            return identity;
+            if (identityToken.StartsWith(PersistedIdentityBinding.Prefix, StringComparison.Ordinal))
+            {
+                string encodedBinding = identityToken[PersistedIdentityBinding.Prefix.Length..];
+                if (encodedBinding.Length == 0 || encodedBinding.Any(static character =>
+                        !(character is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '_')))
+                {
+                    throw new FormatException("The persisted identity binding encoding is invalid.");
+                }
+
+                int bindingPadding = (4 - encodedBinding.Length % 4) % 4;
+                string paddedBinding = encodedBinding
+                    .Replace("-", "+", StringComparison.Ordinal)
+                    .Replace("_", "/", StringComparison.Ordinal) + new string('=', bindingPadding);
+                PersistedIdentityBinding binding = PersistedIdentityBinding.Deserialize(Convert.FromBase64String(paddedBinding));
+                if (!string.Equals(binding.Method, method, StringComparison.Ordinal))
+                {
+                    throw new FormatException("The persisted identity binding is not bound to the endpoint HTTP method.");
+                }
+
+                string renderedRoute = RenderPersistedIdentityBinding(binding, canonicalize: false);
+                if (!string.Equals(renderedRoute, route, StringComparison.Ordinal))
+                {
+                    throw new FormatException("The persisted identity binding does not match the endpoint route.");
+                }
+
+                string renderedIdentityRoute = RenderPersistedIdentityBinding(binding, canonicalize: true);
+                if (!string.Equals(binding.IdentityRoute, renderedIdentityRoute, StringComparison.Ordinal))
+                {
+                    throw new FormatException("The persisted identity binding does not match its canonical route representation.");
+                }
+
+                string identity = renderedIdentityRoute + IdentityMethodSeparator + method.ToUpperInvariant();
+                ValidateIdentityKey(identity, method);
+                return identity;
+            }
+
+            ValidateIdentityKey(identityToken, method);
+            ValidateLegacyIdentityRouteBinding(route, method, identityToken);
+            return identityToken;
         }
         catch (AuthSurfaceBaselineException)
         {
@@ -279,7 +353,7 @@ internal static class AuthSurfaceCanonicalizer
                 "A baseline endpoint has an invalid persisted identity.",
                 exception);
         }
-        catch (Exception exception) when (exception is FormatException or DecoderFallbackException or ArgumentException or OverflowException)
+        catch (Exception exception) when (exception is FormatException or DecoderFallbackException or ArgumentException or OverflowException or EndOfStreamException or IOException)
         {
             throw new AuthSurfaceBaselineException(
                 AuthSurfaceDiagnosticCode.BaselineMalformed,
@@ -353,233 +427,203 @@ internal static class AuthSurfaceCanonicalizer
         ValidateRouteShape(identity[..separator], "canonical identity");
     }
 
-    private static void ValidateIdentityRouteBinding(string route, string method, string identity)
+    private static void ValidateLegacyIdentityRouteBinding(string route, string method, string identity)
     {
         try
         {
             string expected = CanonicalIdentity(route, method);
-            if (!string.Equals(identity, expected, StringComparison.Ordinal) &&
-                !IdentityRouteMatchesDisplay(route, identity))
+            if (!string.Equals(identity, expected, StringComparison.Ordinal))
             {
                 throw new FormatException("The persisted identity does not match the endpoint route and HTTP method.");
             }
         }
         catch (RoutePatternException)
         {
-            // Some accepted programmatic RoutePattern values, such as a default containing
-            // a question mark, cannot be reconstructed from their readable route text. The
-            // persisted token remains the structural representation for those bounded cases,
-            // but it is still bound to every identity-significant part of the display.
-            if (!IdentityRouteMatchesDisplay(route, identity))
+            // A legacy token is accepted without a grammar only when its structural route is
+            // exactly the stored display route. Any other unparseable legacy representation is
+            // ambiguous and must fail closed; new writer output uses the binding format above.
+            int separator = identity.LastIndexOf(IdentityMethodSeparator);
+            if (separator <= 0 || !string.Equals(identity[..separator], route, StringComparison.Ordinal))
             {
-                throw new FormatException("The persisted identity does not match the endpoint route and HTTP method.");
+                throw new FormatException("The legacy persisted identity cannot be proven to match an unparseable endpoint route.");
             }
         }
     }
 
-    private static bool IdentityRouteMatchesDisplay(string route, string identity)
+    private static string EncodePersistedIdentity(string route, string identityToken)
     {
-        int separator = identity.LastIndexOf(IdentityMethodSeparator);
-        if (separator <= 0)
+        string payload = route + PersistedIdentitySeparator + identityToken;
+        byte[] bytes = Encoding.UTF8.GetBytes(payload);
+        string encoded = Convert.ToBase64String(bytes)
+            .TrimEnd('=')
+            .Replace("+", "-", StringComparison.Ordinal)
+            .Replace("/", "_", StringComparison.Ordinal);
+        string result = PersistedIdentityPrefix + encoded;
+        if (result.Length > MaximumPersistedIdentityLength)
         {
-            return false;
+            throw RoutePatternTooLarge();
         }
 
-        string displayRoute = NormalizeUnparseableDisplayRoute(route);
-        string structuralRoute = identity[..separator];
-        bool[] policyBoundaries = FindUnparseablePolicyBoundaries(displayRoute);
-        int displayIndex = 0;
-        int structuralIndex = 0;
-        while (displayIndex < displayRoute.Length && structuralIndex < structuralRoute.Length)
-        {
-            if (policyBoundaries[displayIndex])
-            {
-                if (structuralRoute[structuralIndex] != ':')
-                {
-                    return false;
-                }
-
-                structuralIndex++;
-                bool hasTextualMarker = structuralRoute.AsSpan(structuralIndex)
-                    .StartsWith(TextualPolicyPrefix, StringComparison.Ordinal);
-                bool markerIsOptional = displayRoute.AsSpan(displayIndex + 1)
-                    .StartsWith(ProgrammaticPolicyPrefix, StringComparison.Ordinal);
-                if (hasTextualMarker)
-                {
-                    structuralIndex += TextualPolicyPrefix.Length;
-                }
-                else if (!markerIsOptional)
-                {
-                    return false;
-                }
-
-                displayIndex++;
-                continue;
-            }
-
-            if (displayRoute[displayIndex] != structuralRoute[structuralIndex])
-            {
-                return false;
-            }
-
-            displayIndex++;
-            structuralIndex++;
-        }
-
-        return displayIndex == displayRoute.Length && structuralIndex == structuralRoute.Length;
+        return result;
     }
 
-    private static bool[] FindUnparseablePolicyBoundaries(string route)
+    private static PersistedIdentityBinding CreatePersistedIdentityBinding(
+        RoutePattern pattern,
+        string method,
+        AuthSurfaceCanonicalizationBudget budget,
+        CancellationToken cancellationToken)
     {
-        var boundaries = new bool[route.Length];
-        bool inParameter = false;
-        bool inParameterName = false;
-        bool inDefault = false;
-        int policyDepth = 0;
-        int policyStart = -1;
-        for (int index = 0; index < route.Length; index++)
+        var segments = new List<PersistedIdentityBinding.Segment>();
+        foreach (RoutePatternPathSegment segment in pattern.PathSegments)
         {
-            char character = route[index];
-            if (character == '{' && index + 1 < route.Length && route[index + 1] == '{')
+            cancellationToken.ThrowIfCancellationRequested();
+            var parts = new List<PersistedIdentityBinding.Part>();
+            foreach (RoutePatternPart part in segment.Parts)
             {
-                index++;
-                continue;
-            }
-
-            if (character == '}' && index + 1 < route.Length && route[index + 1] == '}')
-            {
-                index++;
-                continue;
-            }
-
-            if (!inParameter && character == '{')
-            {
-                inParameter = true;
-                inParameterName = true;
-                inDefault = false;
-                policyDepth = 0;
-                policyStart = -1;
-                continue;
-            }
-
-            if (inParameter && character == '}' && policyDepth == 0)
-            {
-                inParameter = false;
-                inParameterName = false;
-                inDefault = false;
-                policyStart = -1;
-                continue;
-            }
-
-            if (!inParameter)
-            {
-                continue;
-            }
-
-            if (inParameterName)
-            {
-                if (character is ':' or '=' or '?')
+                cancellationToken.ThrowIfCancellationRequested();
+                switch (part)
                 {
-                    inParameterName = false;
-                    if (character == ':')
-                    {
-                        boundaries[index] = true;
-                        policyStart = index + 1;
-                    }
-                    else if (character == '=')
-                    {
-                        inDefault = true;
-                    }
-                }
+                    case RoutePatternLiteralPart literal:
+                        parts.Add(new PersistedIdentityBinding.LiteralPart(literal.Content));
+                        break;
+                    case RoutePatternSeparatorPart separator:
+                        parts.Add(new PersistedIdentityBinding.SeparatorPart(separator.Content));
+                        break;
+                    case RoutePatternParameterPart parameter:
+                        {
+                            string? defaultValue = parameter.Default is null
+                                ? null
+                                : Convert.ToString(parameter.Default, CultureInfo.InvariantCulture) ?? string.Empty;
+                            var policies = new List<PersistedIdentityBinding.Policy>();
+                            foreach (RoutePatternParameterPolicyReference policy in parameter.ParameterPolicies)
+                            {
+                                cancellationToken.ThrowIfCancellationRequested();
+                                if (policy.Content is not null)
+                                {
+                                    policies.Add(new PersistedIdentityBinding.Policy(isContent: true, content: policy.Content));
+                                }
+                                else if (policy.ParameterPolicy is not null)
+                                {
+                                    policies.Add(new PersistedIdentityBinding.Policy(
+                                        isContent: false,
+                                        content: AuthSurfaceParameterPolicyRegistry.Render(
+                                            policy.ParameterPolicy,
+                                            parameter.Name,
+                                            budget,
+                                            cancellationToken)));
+                                }
+                                else
+                                {
+                                    throw new AuthSurfaceAnalysisException(
+                                        AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
+                                        $"Route parameter '{parameter.Name}' has a parameter policy without stable content; use a supported framework constraint or a parsed route pattern.");
+                                }
+                            }
 
-                continue;
-            }
-
-            if (inDefault)
-            {
-                continue;
-            }
-
-            if (character == '(')
-            {
-                policyDepth++;
-                continue;
-            }
-
-            if (character == ')' && policyDepth > 0)
-            {
-                policyDepth--;
-                continue;
-            }
-
-            if (policyDepth == 0 && character == '=')
-            {
-                inDefault = true;
-                continue;
-            }
-
-            if (policyDepth == 0 && character == ':')
-            {
-                bool isProgrammaticPrefix = policyStart >= 0 &&
-                    route.AsSpan(policyStart, index - policyStart)
-                        .Equals("programmatic", StringComparison.Ordinal);
-                if (!isProgrammaticPrefix)
-                {
-                    boundaries[index] = true;
-                    policyStart = index + 1;
+                            parts.Add(new PersistedIdentityBinding.ParameterPart(
+                                parameter.Name,
+                                parameter.IsCatchAll,
+                                parameter.EncodeSlashes,
+                                parameter.IsOptional,
+                                defaultValue,
+                                policies));
+                            break;
+                        }
+                    default:
+                        throw new AuthSurfaceAnalysisException(
+                            AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
+                            "The route pattern contains an unsupported route part.");
                 }
             }
+
+            segments.Add(new PersistedIdentityBinding.Segment(parts));
         }
 
-        return boundaries;
+        return new PersistedIdentityBinding(method, segments);
     }
 
-    private static string NormalizeUnparseableDisplayRoute(string route)
+    private static string RenderPersistedIdentityBinding(
+        PersistedIdentityBinding binding,
+        bool canonicalize,
+        AuthSurfaceCanonicalizationBudget? canonicalizationBudget = null,
+        CancellationToken cancellationToken = default)
     {
-        var builder = new StringBuilder(route.Length);
-        bool inParameter = false;
-        bool inParameterName = false;
-        for (int index = 0; index < route.Length; index++)
+        AuthSurfaceCanonicalizationBudget budget = canonicalizationBudget ?? new AuthSurfaceCanonicalizationBudget();
+        var builder = new StringBuilder();
+        foreach (PersistedIdentityBinding.Segment segment in binding.Segments)
         {
-            char character = route[index];
-            if ((character == '{' || character == '}') &&
-                index + 1 < route.Length && route[index + 1] == character)
+            cancellationToken.ThrowIfCancellationRequested();
+            budget.Visit();
+            builder.Append('/');
+            foreach (PersistedIdentityBinding.Part part in segment.Parts)
             {
-                builder.Append(character);
-                builder.Append(character);
-                index++;
-                continue;
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                budget.Visit();
+                switch (part)
+                {
+                    case PersistedIdentityBinding.LiteralPart literal:
+                        AppendBounded(
+                            builder,
+                            EscapeRouteSyntax(literal.Content),
+                            canonicalize,
+                            budget);
+                        break;
+                    case PersistedIdentityBinding.SeparatorPart separator:
+                        AppendBounded(builder, separator.Content, canonicalize, budget);
+                        break;
+                    case PersistedIdentityBinding.ParameterPart parameter:
+                        builder.Append('{');
+                        if (parameter.IsCatchAll)
+                        {
+                            builder.Append(parameter.EncodeSlashes ? "*" : "**");
+                        }
 
-            if (!inParameter && character == '{')
-            {
-                inParameter = true;
-                inParameterName = true;
-                builder.Append(character);
-                continue;
-            }
+                        AppendBounded(builder, parameter.Name, canonicalize, budget);
+                        foreach (PersistedIdentityBinding.Policy policy in parameter.Policies)
+                        {
+                            builder.Append(':');
+                            string policyText = policy.IsContent
+                                ? canonicalize
+                                    ? CanonicalizePolicyContent(policy.Content, budget, depth: 0, cancellationToken)
+                                    : policy.Content
+                                : canonicalize
+                                    ? CanonicalizeGeneratedPolicyContent(policy.Content, budget, depth: 0, cancellationToken)
+                                    : policy.Content;
+                            AppendBounded(builder, EscapeRouteSyntax(policyText), false, budget);
+                        }
 
-            if (inParameter && character == '}')
-            {
-                inParameter = false;
-                inParameterName = false;
-                builder.Append(character);
-                continue;
-            }
+                        if (parameter.Default is not null)
+                        {
+                            builder.Append('=');
+                            AppendBounded(builder, EscapeRouteSyntax(parameter.Default), false, budget);
+                        }
 
-            if (inParameterName && character is ':' or '=' or '?')
-            {
-                inParameterName = false;
-            }
+                        if (parameter.IsOptional)
+                        {
+                            builder.Append('?');
+                        }
 
-            builder.Append(inParameter && inParameterName
-                ? char.ToUpperInvariant(character)
-                : !inParameter
-                    ? char.ToUpperInvariant(character)
-                    : character);
+                        builder.Append('}');
+                        break;
+                    default:
+                        throw new FormatException("The persisted identity binding contains an unknown route part.");
+                }
+
+                AuthSurfaceCanonicalizationBudget.CheckRouteLength(builder.Length);
+            }
         }
 
-        return builder.ToString();
+        string result = builder.Length == 0 ? "/" : builder.ToString();
+        if (!canonicalize)
+        {
+            result = result.Trim();
+            if (result.StartsWith("~/", StringComparison.Ordinal))
+            {
+                result = result[1..];
+            }
+        }
+
+        return result.Length == 0 ? "/" : result;
     }
 
     internal static string Fingerprint(IEnumerable<string> requirements, CancellationToken cancellationToken = default)
@@ -808,75 +852,6 @@ internal static class AuthSurfaceCanonicalizer
         return builder.ToString();
     }
 
-    private static string RenderPattern(
-        RoutePattern pattern,
-        bool caseFoldRouteComponents,
-        bool canonicalizePolicies,
-        bool escapeRouteSyntax,
-        AuthSurfaceCanonicalizationBudget budget,
-        CancellationToken cancellationToken)
-    {
-        var builder = new StringBuilder();
-        foreach (RoutePatternPathSegment segment in pattern.PathSegments)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            budget.Visit();
-            builder.Append('/');
-            foreach (RoutePatternPart part in segment.Parts)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                budget.Visit();
-                switch (part)
-                {
-                    case RoutePatternLiteralPart literal:
-                        AppendBounded(builder, escapeRouteSyntax ? EscapeRouteSyntax(literal.Content) : literal.Content, caseFoldRouteComponents, budget);
-                        break;
-                    case RoutePatternSeparatorPart separator:
-                        AppendBounded(builder, separator.Content, caseFoldRouteComponents, budget);
-                        break;
-                    case RoutePatternParameterPart parameter:
-                        builder.Append('{');
-                        if (parameter.IsCatchAll)
-                        {
-                            builder.Append(parameter.EncodeSlashes ? '*' : "**");
-                        }
-
-                        AppendBounded(builder, parameter.Name, caseFoldRouteComponents, budget);
-                        foreach (RoutePatternParameterPolicyReference policy in parameter.ParameterPolicies)
-                        {
-                            builder.Append(':');
-                            string policyText = RenderParameterPolicy(
-                                policy,
-                                parameter.Name,
-                                canonicalizePolicies,
-                                budget,
-                                cancellationToken);
-                            AppendBounded(builder, escapeRouteSyntax ? EscapeRouteSyntax(policyText) : policyText, false, budget);
-                        }
-
-                        if (parameter.Default is not null)
-                        {
-                            builder.Append('=');
-                            string defaultValue = Convert.ToString(parameter.Default, CultureInfo.InvariantCulture) ?? string.Empty;
-                            AppendBounded(builder, escapeRouteSyntax ? EscapeRouteSyntax(defaultValue) : defaultValue, false, budget);
-                        }
-
-                        if (parameter.IsOptional)
-                        {
-                            builder.Append('?');
-                        }
-
-                        builder.Append('}');
-                        break;
-                }
-
-                AuthSurfaceCanonicalizationBudget.CheckRouteLength(builder.Length);
-            }
-        }
-
-        return builder.Length == 0 ? "/" : builder.ToString();
-    }
-
     private static void AppendBounded(
         StringBuilder builder,
         string value,
@@ -889,37 +864,6 @@ internal static class AuthSurfaceCanonicalizer
 
     private static string EscapeRouteSyntax(string value) =>
         value.Replace("{", "{{", StringComparison.Ordinal).Replace("}", "}}", StringComparison.Ordinal);
-
-    private static string RenderParameterPolicy(
-        RoutePatternParameterPolicyReference policy,
-        string parameterName,
-        bool canonicalizePolicies,
-        AuthSurfaceCanonicalizationBudget budget,
-        CancellationToken cancellationToken)
-    {
-        if (policy.Content is not null)
-        {
-            return canonicalizePolicies
-                ? CanonicalizePolicyContent(policy.Content, budget, depth: 0, cancellationToken)
-                : policy.Content;
-        }
-
-        if (policy.ParameterPolicy is null)
-        {
-            throw new AuthSurfaceAnalysisException(
-                AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
-                $"Route parameter '{parameterName}' has a parameter policy without stable content; use a supported framework constraint or a parsed route pattern.");
-        }
-
-        string rendered = AuthSurfaceParameterPolicyRegistry.Render(
-            policy.ParameterPolicy,
-            parameterName,
-            budget,
-            cancellationToken);
-        return canonicalizePolicies
-            ? CanonicalizeGeneratedPolicyContent(rendered, budget, depth: 0, cancellationToken)
-            : rendered;
-    }
 
     private static string CanonicalizePolicyContent(
         string content,

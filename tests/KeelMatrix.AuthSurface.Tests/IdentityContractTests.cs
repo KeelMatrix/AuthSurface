@@ -1,7 +1,7 @@
-using AuthSurface.FixtureApp;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using AuthSurface.FixtureApp;
 using KeelMatrix.AuthSurface;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Infrastructure;
@@ -267,6 +267,156 @@ public sealed class IdentityContractTests
 
         Assert.Equal(Assert.Single(report.Endpoints).Identity, Assert.Single(roundTrip.Endpoints).Identity);
         Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid);
+    }
+
+    [Theory]
+    [InlineData("foo=bar", "baz", "/items/{id:foo=bar:baz}")]
+    [InlineData("foo:bar", null, "/items/{id:foo:bar}")]
+    public async Task ProgrammaticContentPolicyPayloadsRoundTripThroughPersistedIdentity(
+        string firstPolicy,
+        string? secondPolicy,
+        string expectedRoute)
+    {
+        var policies = new List<RoutePatternParameterPolicyReference>
+        {
+            RoutePatternFactory.ParameterPolicy(firstPolicy),
+        };
+        if (secondPolicy is not null)
+        {
+            policies.Add(RoutePatternFactory.ParameterPolicy(secondPolicy));
+        }
+
+        RoutePattern pattern = RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("items")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "id",
+                        null!,
+                        RoutePatternParameterKind.Standard,
+                        policies),
+                ]),
+            ]);
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+        Assert.Equal(expectedRoute, endpoint.Route);
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+
+        Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid);
+    }
+
+    [Fact]
+    public async Task ProgrammaticRegexDelimiterPayloadRoundTripsThroughPersistedIdentity()
+    {
+        RoutePattern pattern = ProgrammaticPattern(new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+            "[)]:payload",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+            System.Text.RegularExpressions.RegexOptions.Compiled)));
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+        Assert.Equal("/items/{id:programmatic:regex([)]:payload;options=521)}", endpoint.Route);
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+
+        Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid);
+    }
+
+    [Fact]
+    public async Task ProgrammaticRegexDelimiterPayloadRejectsStaleMarkerMutationWithoutRewriting()
+    {
+        RoutePattern pattern = ProgrammaticPattern(new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+            "[)]:payload",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+            System.Text.RegularExpressions.RegexOptions.Compiled)));
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        string json = File.ReadAllText(path);
+        using JsonDocument document = JsonDocument.Parse(json);
+        string persistedIdentity = document.RootElement
+            .GetProperty("endpoints")[0]
+            .GetProperty("identity")
+            .GetString()!;
+        string mutatedIdentity = RewritePersistedIdentity(
+            persistedIdentity,
+            identity => ReplaceStructuralRoute(
+                identity,
+                "/items/{id:programmatic:regex([)]:text:payload;options=521)}"));
+        File.WriteAllText(path, json.Replace(persistedIdentity, mutatedIdentity, StringComparison.Ordinal));
+        byte[] before = File.ReadAllBytes(path);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-malformed", exception.Code);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public async Task PersistedIdentityBindingRoundTripsGeneratedDelimiterContextFamily()
+    {
+        RoutePattern[] patterns =
+        [
+            ProgrammaticContentPoliciesPattern("foo=bar", "baz"),
+            ProgrammaticContentPoliciesPattern("foo:bar"),
+            ProgrammaticContentPoliciesPattern("foo:text:bar", "programmatic:int"),
+            ProgrammaticContentPoliciesPattern("regex([)]:payload)"),
+            ProgrammaticPattern(new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+                "[()]:=payload",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+                System.Text.RegularExpressions.RegexOptions.Compiled))),
+            ProgrammaticPatternWithDefault(
+                new OptionalRouteConstraint(new CompositeRouteConstraint([
+                    new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+                        "[)]:payload",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                        System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+                        System.Text.RegularExpressions.RegexOptions.Compiled)),
+                    new MinRouteConstraint(2),
+                ])),
+                "Default/with:slash"),
+            CatchAllPattern("x?/foo:bar"),
+            MultipleParameterDelimiterPattern(),
+        ];
+
+        using var directory = new TemporaryDirectory();
+        int index = 0;
+        foreach (RoutePattern pattern in patterns)
+        {
+            AuthSurfaceReport report = await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+                new AllowingPolicyProvider()).ScanAsync();
+            AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+            string path = Path.Combine(directory.Path, (++index).ToString(CultureInfo.InvariantCulture), "authsurface.json");
+
+            AuthSurfaceBaseline.Create(report, path, overwrite: false);
+            AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+
+            Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid, endpoint.Route);
+            Assert.Equal(endpoint.Identity, Assert.Single(roundTrip.Endpoints).Identity);
+        }
     }
 
     [Fact]
@@ -555,19 +705,21 @@ public sealed class IdentityContractTests
     public void BaselineRejectsDuplicateRouteMethodRecordsForUnparseableRoute()
     {
         string fingerprint = AuthSurfaceCanonicalizer.Fingerprint([]);
+        RoutePattern pattern = RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("same")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart("id", "x?", RoutePatternParameterKind.Standard),
+                ]),
+            ]);
+        string canonicalIdentity = AuthSurfaceCanonicalizer.CanonicalIdentity(pattern, "GET");
         string firstIdentity = AuthSurfaceCanonicalizer.CreatePersistedIdentity(
+            pattern,
             "/same/{id=x?}",
-            AuthSurfaceCanonicalizer.CanonicalIdentity(
-                RoutePatternFactory.Pattern(
-                    rawText: null!,
-                    segments:
-                    [
-                        RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("same")]),
-                        RoutePatternFactory.Segment([
-                            RoutePatternFactory.ParameterPart("id", "x?", RoutePatternParameterKind.Standard),
-                        ]),
-                    ]),
-                "GET"));
+            "GET",
+            canonicalIdentity);
         string endpoint(string identity) =>
             "{\"route\":\"/same/{id=x?}\",\"identity\":\"" + identity + "\",\"methods\":[\"GET\"]," +
             "\"authorization\":\"ExplicitAnonymous\",\"policies\":[],\"roles\":[],\"schemes\":[]," +
@@ -602,6 +754,29 @@ public sealed class IdentityContractTests
 
         AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
             () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-malformed", exception.Code);
+    }
+
+    [Fact]
+    public void LegacyAmbiguousPersistedIdentityFailsClosed()
+    {
+        RoutePattern pattern = RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("items")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart("id", "x?", RoutePatternParameterKind.Standard),
+                ]),
+            ]);
+        string identity = AuthSurfaceCanonicalizer.CanonicalIdentity(pattern, "GET");
+        string legacyToken = AuthSurfaceCanonicalizer.CreatePersistedIdentity(
+            "/items/{id=x?}",
+            identity);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceCanonicalizer.ReadPersistedIdentity(legacyToken, "/items/{id=x?}", "GET"));
 
         Assert.Equal("baseline-malformed", exception.Code);
     }
@@ -1028,6 +1203,50 @@ public sealed class IdentityContractTests
                 ]),
             ]);
 
+    private static RoutePattern ProgrammaticContentPoliciesPattern(params string[] policies) =>
+        RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("MiXeD")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "id",
+                        null!,
+                        RoutePatternParameterKind.Standard,
+                        policies.Select(RoutePatternFactory.ParameterPolicy).ToArray()),
+                ]),
+            ]);
+
+    private static RoutePattern MultipleParameterDelimiterPattern() =>
+        RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("items")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "first",
+                        "x?/with:slash",
+                        RoutePatternParameterKind.Standard,
+                        [
+                            RoutePatternFactory.ParameterPolicy("foo=bar"),
+                            RoutePatternFactory.ParameterPolicy("baz"),
+                        ]),
+                ]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "second",
+                        "fallback",
+                        RoutePatternParameterKind.CatchAll,
+                        [RoutePatternFactory.ParameterPolicy(new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+                            "[)]:payload",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                            System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+                            System.Text.RegularExpressions.RegexOptions.Compiled))) ]),
+                ]),
+            ]);
+
     private static RoutePattern ProgrammaticPatternWithDefault(IParameterPolicy policy, object defaultValue) =>
         RoutePatternFactory.Pattern(
             rawText: null!,
@@ -1171,7 +1390,39 @@ public sealed class IdentityContractTests
         string payload = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
         int separator = payload.IndexOf('\u001e');
         Assert.True(separator > 0);
-        string rewrittenPayload = payload[..(separator + 1)] + rewriteIdentity(payload[(separator + 1)..]);
+        string identityToken = payload[(separator + 1)..];
+        string rewrittenToken;
+        if (identityToken.StartsWith(PersistedIdentityBinding.Prefix, StringComparison.Ordinal))
+        {
+            string encodedBinding = identityToken[PersistedIdentityBinding.Prefix.Length..]
+                .Replace('-', '+')
+                .Replace('_', '/');
+            encodedBinding += new string('=', (4 - encodedBinding.Length % 4) % 4);
+            PersistedIdentityBinding binding = PersistedIdentityBinding.Deserialize(
+                Convert.FromBase64String(encodedBinding));
+            string structuralIdentity = binding.IdentityRoute! + '\u001f' + binding.Method.ToUpperInvariant();
+            string mutatedIdentity = rewriteIdentity(structuralIdentity);
+            int methodSeparator = mutatedIdentity.LastIndexOf('\u001f');
+            Assert.True(methodSeparator > 0);
+            string mutatedRoute = mutatedIdentity[..methodSeparator];
+            string mutatedMethod = mutatedIdentity[(methodSeparator + 1)..];
+            Assert.NotEqual(structuralIdentity, mutatedIdentity);
+            string mutatedBinding = Convert.ToBase64String(
+                    binding
+                        .WithIdentityRoute(mutatedRoute)
+                        .WithMethod(mutatedMethod)
+                        .Serialize())
+                .TrimEnd('=')
+                .Replace('+', '-')
+                .Replace('/', '_');
+            rewrittenToken = PersistedIdentityBinding.Prefix + mutatedBinding;
+        }
+        else
+        {
+            rewrittenToken = rewriteIdentity(identityToken);
+        }
+
+        string rewrittenPayload = payload[..(separator + 1)] + rewrittenToken;
         return "v1:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(rewrittenPayload))
             .TrimEnd('=')
             .Replace('+', '-')
