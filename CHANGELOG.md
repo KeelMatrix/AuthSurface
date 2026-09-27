@@ -4,7 +4,7 @@ All notable changes to this package will be documented here.
 
 ## [Unreleased]
 
-- Hardened baseline identity validation and route persistence for method binding, malformed/stale records, programmatic defaults, identity-significant policy/default/regex mutations, and duplicate route/method entries.
+- Hardened baseline identity validation and route persistence for method binding, malformed/stale records, programmatic defaults, identity-significant policy/default/regex mutations, and duplicate route/method entries. For unparseable or provenance-ambiguous displays, persisted identities now compare exact route payloads and recognize the `text:` provenance marker only at policy boundaries; marker-like text in defaults or policy payloads is not stripped.
 - Matched anonymous policy construction to ASP.NET Core fallback-policy behavior, enforced cumulative scanner-owned expansion/resource budgets across route methods and authorization values, and rejected derived route-policy wrappers that are not exact supported runtime types.
 - Preserved distinct textual and programmatic route-policy provenance, including for content-bearing values that begin with the reserved `programmatic:` marker.
 - Applied cumulative scan-wide bounds to route rendering/policy expansion, authorization metadata, and requirement-data expansion; requirement-data items are charged before materialization, with exact-boundary, aggregate, cancellation, and per-endpoint-limit coverage.

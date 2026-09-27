@@ -33,7 +33,7 @@ public sealed class AuthSurfaceEndpoint
 
     private readonly string? identity;
 
-    /// <summary>Gets the normalized display route pattern. Durable identity uses a bounded canonical representation that preserves textual-versus-programmatic policy provenance plus the HTTP method.</summary>
+    /// <summary>Gets the normalized display route pattern. Durable identity uses a bounded canonical representation that preserves textual-versus-programmatic policy provenance plus the HTTP method; persisted unparseable displays use exact marker-boundary validation rather than marker stripping.</summary>
     public string Route { get; }
 
     /// <summary>Gets the sorted HTTP method contract. A method-less endpoint uses <c>*</c>.</summary>

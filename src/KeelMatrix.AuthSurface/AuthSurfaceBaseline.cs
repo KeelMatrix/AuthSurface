@@ -688,6 +688,7 @@ public sealed class AuthSurfaceBaseline
         {
             // The lossless identity token below is the supported persistence path for
             // programmatic patterns whose readable route cannot be parsed as route syntax.
+            // The reader validates this token with exact policy-boundary marker handling.
         }
 
         return AuthSurfaceCanonicalizer.CreatePersistedIdentity(endpoint.Route, endpoint.Identity);

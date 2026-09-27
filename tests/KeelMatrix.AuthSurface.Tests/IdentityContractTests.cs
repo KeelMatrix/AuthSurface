@@ -270,6 +270,134 @@ public sealed class IdentityContractTests
     }
 
     [Fact]
+    public async Task PersistedIdentityRejectsTextMarkerInjectedIntoProgrammaticDefault()
+    {
+        RoutePattern pattern = RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("items")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "id",
+                        "x?:foo",
+                        RoutePatternParameterKind.Standard,
+                        [RoutePatternFactory.ParameterPolicy(new IntRouteConstraint())]),
+                ]),
+            ]);
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        string json = File.ReadAllText(path);
+        using JsonDocument document = JsonDocument.Parse(json);
+        string persistedIdentity = document.RootElement
+            .GetProperty("endpoints")[0]
+            .GetProperty("identity")
+            .GetString()!;
+        string mutatedIdentity = RewritePersistedIdentity(
+            persistedIdentity,
+            identity => ReplaceStructuralRoute(identity, "/items/{id:programmatic:int=x?:text:foo}"));
+        File.WriteAllText(path, json.Replace(persistedIdentity, mutatedIdentity, StringComparison.Ordinal));
+        byte[] before = File.ReadAllBytes(path);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-malformed", exception.Code);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    [Theory]
+    [InlineData("policy-token")]
+    [InlineData("regex-policy-token")]
+    [InlineData("composite-policy-token")]
+    [InlineData("optional-policy-token")]
+    [InlineData("default")]
+    [InlineData("catch-all-default")]
+    [InlineData("slash-default")]
+    [InlineData("literal-marker-default")]
+    [InlineData("mixed-case-policy-token")]
+    [InlineData("regex-payload")]
+    [InlineData("nested-payload")]
+    [InlineData("escaped-brace-payload")]
+    public async Task PersistedIdentityRejectsTextMarkerInjectionFamilyWithoutRewriting(string mutationCase)
+    {
+        RoutePattern pattern = mutationCase switch
+        {
+            "policy-token" => ProgrammaticPatternWithDefault(new IntRouteConstraint(), "x?"),
+            "regex-policy-token" => ProgrammaticPatternWithDefault(ProgrammaticRegex(), "x?"),
+            "composite-policy-token" => ProgrammaticPatternWithDefault(
+                new CompositeRouteConstraint([new IntRouteConstraint(), new MinRouteConstraint(2)]),
+                "x?"),
+            "optional-policy-token" => ProgrammaticPatternWithDefault(
+                new OptionalRouteConstraint(new IntRouteConstraint()),
+                "x?"),
+            "default" => ProgrammaticPatternWithDefault(new IntRouteConstraint(), "x?:foo"),
+            "catch-all-default" => CatchAllPattern("x?/foo"),
+            "slash-default" => ProgrammaticPatternWithDefault(new IntRouteConstraint(), "foo/bar"),
+            "literal-marker-default" => ProgrammaticPatternWithDefault(new IntRouteConstraint(), "literal:text:marker"),
+            "mixed-case-policy-token" => ProgrammaticPatternWithDefault(new IntRouteConstraint(), "x?"),
+            "regex-payload" => ProgrammaticPatternWithDefault(ProgrammaticRegex(), "x?"),
+            "nested-payload" => ProgrammaticPatternWithDefault(
+                new OptionalRouteConstraint(new CompositeRouteConstraint([new IntRouteConstraint(), new MinRouteConstraint(2)])),
+                "x?"),
+            "escaped-brace-payload" => ProgrammaticPatternWithDefault(
+                new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+                    "^\\d{1,3}$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+                    System.Text.RegularExpressions.RegexOptions.Compiled)),
+                "x?"),
+            _ => throw new ArgumentOutOfRangeException(nameof(mutationCase)),
+        };
+
+        await AssertPersistedIdentityMutationRejected(
+            pattern,
+            structuralRoute => ApplyMarkerMutation(structuralRoute, mutationCase));
+    }
+
+    [Fact]
+    public async Task AcceptedUnparseableRepresentationsRoundTripTheirExactWriterTokens()
+    {
+        foreach (RoutePattern pattern in new[]
+        {
+            ProgrammaticPatternWithDefault(new IntRouteConstraint(), "x?"),
+            ProgrammaticPatternWithDefault(ProgrammaticRegex(), "x?"),
+            ProgrammaticPatternWithDefault(
+                new CompositeRouteConstraint([new IntRouteConstraint(), new MinRouteConstraint(2)]),
+                "x?"),
+            ProgrammaticPatternWithDefault(new OptionalRouteConstraint(new IntRouteConstraint()), "x?"),
+            CatchAllPattern("x?/foo"),
+            ProgrammaticPatternWithDefault(new IntRouteConstraint(), "foo/bar"),
+            ProgrammaticPatternWithDefault(new IntRouteConstraint(), "literal:text:marker"),
+            ProgrammaticPatternWithDefault(
+                new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+                    "^\\d{1,3}$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+                    System.Text.RegularExpressions.RegexOptions.Compiled)),
+                "x?"),
+        })
+        {
+            using var directory = new TemporaryDirectory();
+            string path = Path.Combine(directory.Path, "authsurface.json");
+            AuthSurfaceReport report = await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+                new AllowingPolicyProvider()).ScanAsync();
+
+            AuthSurfaceBaseline.Create(report, path, overwrite: false);
+            AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+
+            Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid);
+            Assert.Equal(Assert.Single(report.Endpoints).Identity, Assert.Single(roundTrip.Endpoints).Identity);
+        }
+    }
+
+    [Fact]
     public async Task ProgrammaticPolicyAndDefaultRoundTripThroughPersistedIdentity()
     {
         foreach (IParameterPolicy policy in new IParameterPolicy[]
@@ -899,6 +1027,100 @@ public sealed class IdentityContractTests
                         [RoutePatternFactory.ParameterPolicy(policy)]),
                 ]),
             ]);
+
+    private static RoutePattern ProgrammaticPatternWithDefault(IParameterPolicy policy, object defaultValue) =>
+        RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("items")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "id",
+                        defaultValue,
+                        RoutePatternParameterKind.Standard,
+                        [RoutePatternFactory.ParameterPolicy(policy)]),
+                ]),
+            ]);
+
+    private static RegexRouteConstraint ProgrammaticRegex() =>
+        new(new System.Text.RegularExpressions.Regex(
+            "^\\d+$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+            System.Text.RegularExpressions.RegexOptions.Compiled));
+
+    private static RoutePattern CatchAllPattern(object defaultValue) =>
+        RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("files")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "path",
+                        defaultValue,
+                        RoutePatternParameterKind.CatchAll,
+                        [RoutePatternFactory.ParameterPolicy(new IntRouteConstraint())]),
+                ]),
+            ]);
+
+    private static async Task AssertPersistedIdentityMutationRejected(
+        RoutePattern pattern,
+        Func<string, string> rewriteStructuralRoute)
+    {
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        string json = File.ReadAllText(path);
+        using JsonDocument document = JsonDocument.Parse(json);
+        string persistedIdentity = document.RootElement
+            .GetProperty("endpoints")[0]
+            .GetProperty("identity")
+            .GetString()!;
+        string mutatedIdentity = RewritePersistedIdentity(
+            persistedIdentity,
+            identity =>
+            {
+                int methodSeparator = identity.LastIndexOf('\u001f');
+                Assert.True(methodSeparator > 0);
+                string structuralRoute = identity[..methodSeparator];
+                string mutatedRoute = rewriteStructuralRoute(structuralRoute);
+                Assert.NotEqual(structuralRoute, mutatedRoute);
+                return mutatedRoute + identity[methodSeparator..];
+            });
+        File.WriteAllText(path, json.Replace(persistedIdentity, mutatedIdentity, StringComparison.Ordinal));
+        byte[] before = File.ReadAllBytes(path);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-malformed", exception.Code);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    private static string ApplyMarkerMutation(string structuralRoute, string mutationCase) =>
+        mutationCase switch
+        {
+            "policy-token" or "regex-policy-token" or "composite-policy-token" or "optional-policy-token" =>
+                structuralRoute.Replace(":programmatic:", ":programmatic:text:", StringComparison.Ordinal),
+            "mixed-case-policy-token" =>
+                structuralRoute.Replace(":programmatic:", ":programmatic:Text:", StringComparison.Ordinal),
+            "default" => structuralRoute.Replace("=x?:foo", "=x?:text:foo", StringComparison.Ordinal),
+            "catch-all-default" => structuralRoute.Replace("=x?/foo", "=x?:text:foo", StringComparison.Ordinal),
+            "slash-default" => structuralRoute.Replace("=foo/bar", "=foo/:text:bar", StringComparison.Ordinal),
+            "literal-marker-default" =>
+                structuralRoute.Replace("=literal:text:marker", "=literal:text:text:marker", StringComparison.Ordinal),
+            "regex-payload" => structuralRoute.Replace(";options=521", ";options=521:text:", StringComparison.Ordinal),
+            "nested-payload" => structuralRoute.Replace("int,min", "int:text:min", StringComparison.Ordinal),
+            "escaped-brace-payload" =>
+                structuralRoute.Replace("{{1,3}}", "{{1,3}}:text:", StringComparison.Ordinal),
+            _ => throw new ArgumentOutOfRangeException(nameof(mutationCase)),
+        };
 
     public static IEnumerable<object[]> ReservedProgrammaticMarkerCases() =>
     new (string TextualPolicy, Func<IParameterPolicy> RuntimePolicy)[]

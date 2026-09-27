@@ -358,15 +358,8 @@ internal static class AuthSurfaceCanonicalizer
         try
         {
             string expected = CanonicalIdentity(route, method);
-            string programmaticExpected = route.Contains(
-                    "programmatic:",
-                    StringComparison.Ordinal)
-                ? expected.Replace("text:", string.Empty, StringComparison.Ordinal)
-                : expected;
             if (!string.Equals(identity, expected, StringComparison.Ordinal) &&
-                !string.Equals(identity, programmaticExpected, StringComparison.Ordinal) &&
-                !(route.Contains("programmatic:", StringComparison.Ordinal) &&
-                    IdentityRouteMatchesDisplay(route, identity)))
+                !IdentityRouteMatchesDisplay(route, identity))
             {
                 throw new FormatException("The persisted identity does not match the endpoint route and HTTP method.");
             }
@@ -392,56 +385,153 @@ internal static class AuthSurfaceCanonicalizer
             return false;
         }
 
-        string structuralRoute = RemoveTextualPolicyMarkers(identity[..separator]);
-        return string.Equals(
-            NormalizeUnparseableDisplayRoute(structuralRoute),
-            NormalizeUnparseableDisplayRoute(route),
-            StringComparison.Ordinal);
-    }
-
-    private static string RemoveTextualPolicyMarkers(string route)
-    {
-        var builder = new StringBuilder(route.Length);
-        int parameterDepth = 0;
-        int policyDepth = 0;
-        for (int index = 0; index < route.Length; index++)
+        string displayRoute = NormalizeUnparseableDisplayRoute(route);
+        string structuralRoute = identity[..separator];
+        bool[] policyBoundaries = FindUnparseablePolicyBoundaries(displayRoute);
+        int displayIndex = 0;
+        int structuralIndex = 0;
+        while (displayIndex < displayRoute.Length && structuralIndex < structuralRoute.Length)
         {
-            char character = route[index];
-            if (character == '{' && (index + 1 >= route.Length || route[index + 1] != '{'))
+            if (policyBoundaries[displayIndex])
             {
-                parameterDepth++;
-                policyDepth = 0;
-            }
-            else if (character == '}' && (index == 0 || route[index - 1] != '}') && parameterDepth > 0)
-            {
-                parameterDepth--;
-                policyDepth = 0;
-            }
-
-            if (parameterDepth > 0)
-            {
-                if (character == '(')
+                if (structuralRoute[structuralIndex] != ':')
                 {
-                    policyDepth++;
+                    return false;
                 }
-                else if (character == ')' && policyDepth > 0)
-                {
-                    policyDepth--;
-                }
-            }
 
-            if (parameterDepth > 0 && policyDepth == 0 &&
-                character == ':' && route.AsSpan(index + 1).StartsWith("text:", StringComparison.Ordinal))
-            {
-                builder.Append(':');
-                index += TextualPolicyPrefix.Length;
+                structuralIndex++;
+                bool hasTextualMarker = structuralRoute.AsSpan(structuralIndex)
+                    .StartsWith(TextualPolicyPrefix, StringComparison.Ordinal);
+                bool markerIsOptional = displayRoute.AsSpan(displayIndex + 1)
+                    .StartsWith(ProgrammaticPolicyPrefix, StringComparison.Ordinal);
+                if (hasTextualMarker)
+                {
+                    structuralIndex += TextualPolicyPrefix.Length;
+                }
+                else if (!markerIsOptional)
+                {
+                    return false;
+                }
+
+                displayIndex++;
                 continue;
             }
 
-            builder.Append(character);
+            if (displayRoute[displayIndex] != structuralRoute[structuralIndex])
+            {
+                return false;
+            }
+
+            displayIndex++;
+            structuralIndex++;
         }
 
-        return builder.ToString();
+        return displayIndex == displayRoute.Length && structuralIndex == structuralRoute.Length;
+    }
+
+    private static bool[] FindUnparseablePolicyBoundaries(string route)
+    {
+        var boundaries = new bool[route.Length];
+        bool inParameter = false;
+        bool inParameterName = false;
+        bool inDefault = false;
+        int policyDepth = 0;
+        int policyStart = -1;
+        for (int index = 0; index < route.Length; index++)
+        {
+            char character = route[index];
+            if (character == '{' && index + 1 < route.Length && route[index + 1] == '{')
+            {
+                index++;
+                continue;
+            }
+
+            if (character == '}' && index + 1 < route.Length && route[index + 1] == '}')
+            {
+                index++;
+                continue;
+            }
+
+            if (!inParameter && character == '{')
+            {
+                inParameter = true;
+                inParameterName = true;
+                inDefault = false;
+                policyDepth = 0;
+                policyStart = -1;
+                continue;
+            }
+
+            if (inParameter && character == '}' && policyDepth == 0)
+            {
+                inParameter = false;
+                inParameterName = false;
+                inDefault = false;
+                policyStart = -1;
+                continue;
+            }
+
+            if (!inParameter)
+            {
+                continue;
+            }
+
+            if (inParameterName)
+            {
+                if (character is ':' or '=' or '?')
+                {
+                    inParameterName = false;
+                    if (character == ':')
+                    {
+                        boundaries[index] = true;
+                        policyStart = index + 1;
+                    }
+                    else if (character == '=')
+                    {
+                        inDefault = true;
+                    }
+                }
+
+                continue;
+            }
+
+            if (inDefault)
+            {
+                continue;
+            }
+
+            if (character == '(')
+            {
+                policyDepth++;
+                continue;
+            }
+
+            if (character == ')' && policyDepth > 0)
+            {
+                policyDepth--;
+                continue;
+            }
+
+            if (policyDepth == 0 && character == '=')
+            {
+                inDefault = true;
+                continue;
+            }
+
+            if (policyDepth == 0 && character == ':')
+            {
+                bool isProgrammaticPrefix = policyStart >= 0 &&
+                    route.AsSpan(policyStart, index - policyStart)
+                        .Equals("programmatic", StringComparison.Ordinal);
+                if (!isProgrammaticPrefix)
+                {
+                    boundaries[index] = true;
+                    policyStart = index + 1;
+                }
+            }
+        }
+
+        return boundaries;
     }
 
     private static string NormalizeUnparseableDisplayRoute(string route)
@@ -452,7 +542,16 @@ internal static class AuthSurfaceCanonicalizer
         for (int index = 0; index < route.Length; index++)
         {
             char character = route[index];
-            if (!inParameter && character == '{' && (index + 1 >= route.Length || route[index + 1] != '{'))
+            if ((character == '{' || character == '}') &&
+                index + 1 < route.Length && route[index + 1] == character)
+            {
+                builder.Append(character);
+                builder.Append(character);
+                index++;
+                continue;
+            }
+
+            if (!inParameter && character == '{')
             {
                 inParameter = true;
                 inParameterName = true;
@@ -460,7 +559,7 @@ internal static class AuthSurfaceCanonicalizer
                 continue;
             }
 
-            if (inParameter && character == '}' && (index == 0 || route[index - 1] != '}'))
+            if (inParameter && character == '}')
             {
                 inParameter = false;
                 inParameterName = false;
