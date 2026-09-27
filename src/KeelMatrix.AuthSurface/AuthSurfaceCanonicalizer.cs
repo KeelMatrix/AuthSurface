@@ -17,6 +17,18 @@ internal static class AuthSurfaceCanonicalizer
     internal const int MaximumRoutePolicyLength = 8_192;
     internal const int MaximumRoutePolicyDepth = 32;
     internal const int MaximumRoutePolicyWork = 100_000;
+    internal const int MaximumPersistedIdentityLength = 65_536;
+    internal const int MaximumInputEndpointCount = 100_000;
+    internal const int MaximumMethodsPerEndpoint = 1_048_576;
+    internal const int MaximumEffectiveRequirementCount = 100_000;
+    internal const int MaximumNestedValueCount = 100_000;
+    internal const int MaximumMetadataValueLength = 8_192;
+    internal const int MaximumNestedValueCharacters = 1_048_576;
+    internal const int MaximumCanonicalRequirementCharacters = 1_048_576;
+
+    private const string PersistedIdentityPrefix = "v1:";
+    private const char PersistedIdentitySeparator = '\u001e';
+    private const char IdentityMethodSeparator = '\u001f';
 
     private const string TextualPolicyPrefix = "text:";
     private const string ProgrammaticPolicyPrefix = "programmatic:";
@@ -36,21 +48,51 @@ internal static class AuthSurfaceCanonicalizer
             throw RoutePatternTooLarge();
         }
 
-        string[] segments = route.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        return segments.Length == 0 ? "/" : "/" + string.Join('/', segments);
+        ValidateRouteShape(route, "route");
+        return route.Length == 0 ? "/" : route;
     }
 
-    internal static IEnumerable<string> GetMethods(RouteEndpoint endpoint)
+    internal static string[] GetMethods(RouteEndpoint endpoint, CancellationToken cancellationToken = default)
     {
         IHttpMethodMetadata? metadata = endpoint.Metadata.GetMetadata<IHttpMethodMetadata>();
-        string[] methods = metadata?.HttpMethods?
-            .Where(static method => !string.IsNullOrWhiteSpace(method))
-            .Select(static method => method.Trim().ToUpperInvariant())
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(static method => method, StringComparer.Ordinal)
-            .ToArray() ?? [];
+        if (metadata?.HttpMethods is null)
+        {
+            return ["*"];
+        }
 
-        return methods.Length == 0 ? ["*"] : methods;
+        var methods = new List<string>();
+        int methodCharacters = 0;
+        foreach (string? method in metadata.HttpMethods)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(method))
+            {
+                continue;
+            }
+
+            if (method.Length > MaximumMetadataValueLength)
+            {
+                throw ResourceLimit("An endpoint HTTP method exceeds the supported metadata value length.");
+            }
+
+            string normalizedMethod = method.Trim().ToUpperInvariant();
+            methodCharacters = checked(methodCharacters + normalizedMethod.Length);
+            if (methodCharacters > MaximumNestedValueCharacters)
+            {
+                throw ResourceLimit($"An endpoint's HTTP method metadata exceeds the supported {MaximumNestedValueCharacters:N0}-character bound.");
+            }
+
+            if (methods.Count >= MaximumMethodsPerEndpoint)
+            {
+                throw ResourceLimit($"An endpoint exceeds the supported {MaximumMethodsPerEndpoint:N0}-method bound.");
+            }
+
+            methods.Add(normalizedMethod);
+        }
+
+        string[] normalized = methods.Distinct(StringComparer.Ordinal).OrderBy(static method => method, StringComparer.Ordinal).ToArray();
+
+        return normalized.Length == 0 ? ["*"] : normalized;
     }
 
     internal static string[] OrderedDistinct(IEnumerable<string?> values) =>
@@ -80,16 +122,38 @@ internal static class AuthSurfaceCanonicalizer
     internal static string[] SplitMetadataValues(IEnumerable<string?> values) =>
         OrderedDistinct(values.SelectMany(static value => value?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? []));
 
-    internal static string[] CanonicalizeRequirements(AuthorizationPolicy? policy)
+    internal static string[] CanonicalizeRequirements(
+        AuthorizationPolicy? policy,
+        CancellationToken cancellationToken = default)
     {
         if (policy is null)
         {
             return [];
         }
 
+        if (policy.Requirements.Count > MaximumEffectiveRequirementCount)
+        {
+            throw ResourceLimit($"The effective authorization policy exceeds the supported {MaximumEffectiveRequirementCount:N0}-requirement bound.");
+        }
+
         // AuthorizationPolicy.Requirements is the framework's combined sequence. Preserve its
         // order and duplicate entries because both are part of the effective policy identity.
-        return policy.Requirements.Select(CanonicalizeRequirement).ToArray();
+        var requirements = new List<string>(policy.Requirements.Count);
+        int characters = 0;
+        foreach (IAuthorizationRequirement requirement in policy.Requirements)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string canonical = CanonicalizeRequirement(requirement, cancellationToken);
+            characters = checked(characters + canonical.Length);
+            if (characters > MaximumCanonicalRequirementCharacters)
+            {
+                throw ResourceLimit($"The canonical authorization requirements exceed the supported {MaximumCanonicalRequirementCharacters:N0}-character bound.");
+            }
+
+            requirements.Add(canonical);
+        }
+
+        return requirements.ToArray();
     }
 
     internal static int CompareEndpoints(AuthSurfaceEndpoint left, AuthSurfaceEndpoint right)
@@ -119,7 +183,151 @@ internal static class AuthSurfaceCanonicalizer
             caseFoldRouteComponents: true,
             canonicalizePolicies: true,
             escapeRouteSyntax: true,
-            new AuthSurfaceCanonicalizationBudget()) + "\u001f" + method.ToUpperInvariant();
+            new AuthSurfaceCanonicalizationBudget()) + IdentityMethodSeparator + method.ToUpperInvariant();
+    }
+
+    internal static string CreatePersistedIdentity(string route, string identity)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+        ArgumentNullException.ThrowIfNull(identity);
+        ValidateRouteShape(route, "route");
+        ValidateIdentityKey(identity, identity[(identity.LastIndexOf(IdentityMethodSeparator) + 1)..]);
+
+        string payload = route + PersistedIdentitySeparator + identity;
+        byte[] bytes = Encoding.UTF8.GetBytes(payload);
+        string encoded = Convert.ToBase64String(bytes)
+            .TrimEnd('=')
+            .Replace("+", "-", StringComparison.Ordinal)
+            .Replace("/", "_", StringComparison.Ordinal);
+        string result = PersistedIdentityPrefix + encoded;
+        if (result.Length > MaximumPersistedIdentityLength)
+        {
+            throw RoutePatternTooLarge();
+        }
+
+        return result;
+    }
+
+    internal static string ReadPersistedIdentity(string persistedIdentity, string route, string method)
+    {
+        ArgumentNullException.ThrowIfNull(persistedIdentity);
+        ArgumentNullException.ThrowIfNull(route);
+        ArgumentNullException.ThrowIfNull(method);
+
+        try
+        {
+            if (!persistedIdentity.StartsWith(PersistedIdentityPrefix, StringComparison.Ordinal) ||
+                persistedIdentity.Length > MaximumPersistedIdentityLength)
+            {
+                throw new FormatException("The persisted identity prefix or size is invalid.");
+            }
+
+            string encoded = persistedIdentity[PersistedIdentityPrefix.Length..];
+            if (encoded.Length == 0 || encoded.Any(static character =>
+                    !(character is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '_')))
+            {
+                throw new FormatException("The persisted identity encoding is invalid.");
+            }
+
+            int padding = (4 - encoded.Length % 4) % 4;
+            string padded = encoded.Replace("-", "+", StringComparison.Ordinal).Replace("_", "/", StringComparison.Ordinal) + new string('=', padding);
+            string payload = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
+                .GetString(Convert.FromBase64String(padded));
+            int separator = payload.IndexOf(PersistedIdentitySeparator);
+            if (separator <= 0 || separator == payload.Length - 1 ||
+                !string.Equals(payload[..separator], route, StringComparison.Ordinal))
+            {
+                throw new FormatException("The persisted identity route does not match the endpoint route.");
+            }
+
+            string identity = payload[(separator + 1)..];
+            ValidateRouteShape(route, "route");
+            ValidateIdentityKey(identity, method);
+            return identity;
+        }
+        catch (AuthSurfaceBaselineException)
+        {
+            throw;
+        }
+        catch (AuthSurfaceAnalysisException exception)
+        {
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "A baseline endpoint has an invalid persisted identity.",
+                exception);
+        }
+        catch (Exception exception) when (exception is FormatException or DecoderFallbackException or ArgumentException or OverflowException)
+        {
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineMalformed,
+                "A baseline endpoint has an invalid persisted identity.",
+                exception);
+        }
+    }
+
+    internal static void ValidateRouteShape(string route, string description)
+    {
+        if (string.IsNullOrWhiteSpace(route) || route.Length > MaximumRoutePatternLength || route[0] != '/')
+        {
+            throw new FormatException($"The persisted {description} is not a bounded absolute route pattern.");
+        }
+
+        int depth = 0;
+        for (int index = 0; index < route.Length; index++)
+        {
+            char character = route[index];
+            if (char.IsControl(character))
+            {
+                throw new FormatException($"The persisted {description} contains a control character.");
+            }
+
+            if (character == '{' && index + 1 < route.Length && route[index + 1] == '{')
+            {
+                index++;
+                continue;
+            }
+
+            if (character == '}' && index + 1 < route.Length && route[index + 1] == '}')
+            {
+                index++;
+                continue;
+            }
+
+            if (character == '{')
+            {
+                depth++;
+                if (depth > MaximumRoutePolicyDepth)
+                {
+                    throw RoutePolicyTooDeep();
+                }
+            }
+            else if (character == '}' && --depth < 0)
+            {
+                throw new FormatException($"The persisted {description} has an unmatched closing brace.");
+            }
+        }
+
+        if (depth != 0)
+        {
+            throw new FormatException($"The persisted {description} has an unmatched opening brace.");
+        }
+    }
+
+    private static void ValidateIdentityKey(string identity, string method)
+    {
+        if (string.IsNullOrWhiteSpace(identity) || identity.Length > MaximumPersistedIdentityLength)
+        {
+            throw new FormatException("The canonical identity is empty or exceeds the supported bound.");
+        }
+
+        int separator = identity.LastIndexOf(IdentityMethodSeparator);
+        if (separator <= 0 || separator == identity.Length - 1 ||
+            !string.Equals(identity[(separator + 1)..], method, StringComparison.Ordinal))
+        {
+            throw new FormatException("The canonical identity is not bound to the endpoint HTTP method.");
+        }
+
+        ValidateRouteShape(identity[..separator], "canonical identity");
     }
 
     internal static string Fingerprint(IEnumerable<string> requirements)
@@ -143,10 +351,95 @@ internal static class AuthSurfaceCanonicalizer
         new(AuthSurfaceDiagnosticCode.RoutePolicyTooComplex,
             $"The route policy expression exceeds the supported work bound of {MaximumRoutePolicyWork:N0} operations.");
 
-    private static string CanonicalizeRequirement(IAuthorizationRequirement requirement)
+    internal static AuthSurfaceAnalysisException ResourceLimit(string message) =>
+        new(AuthSurfaceDiagnosticCode.ResourceLimit, message);
+
+    internal static string[] BoundedDistinctValues(
+        IEnumerable<string?> values,
+        bool splitCommaSeparated,
+        bool trimValues,
+        bool ignoreBlank,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        var materialized = new List<string>();
+        int characters = 0;
+        foreach (string? value in values)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (value is null || (ignoreBlank && string.IsNullOrWhiteSpace(value)))
+            {
+                continue;
+            }
+
+            if (value.Length > MaximumMetadataValueLength)
+            {
+                throw ResourceLimit($"An authorization metadata value exceeds the supported {MaximumMetadataValueLength:N0}-character bound.");
+            }
+
+            IEnumerable<string> pieces = splitCommaSeparated
+                ? value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                : [trimValues ? value.Trim() : value];
+            foreach (string piece in pieces)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (ignoreBlank && string.IsNullOrWhiteSpace(piece))
+                {
+                    continue;
+                }
+
+                if (piece.Length > MaximumMetadataValueLength)
+                {
+                    throw ResourceLimit($"An authorization metadata value exceeds the supported {MaximumMetadataValueLength:N0}-character bound.");
+                }
+
+                string normalized = trimValues ? piece.Trim() : piece;
+                characters = checked(characters + normalized.Length);
+                if (characters > MaximumNestedValueCharacters)
+                {
+                    throw ResourceLimit($"Authorization metadata exceeds the supported {MaximumNestedValueCharacters:N0}-character bound.");
+                }
+
+                if (materialized.Count >= MaximumNestedValueCount)
+                {
+                    throw ResourceLimit($"Authorization metadata exceeds the supported {MaximumNestedValueCount:N0}-value bound.");
+                }
+
+                materialized.Add(normalized);
+            }
+        }
+
+        return materialized.Distinct(StringComparer.Ordinal).OrderBy(static value => value, StringComparer.Ordinal).ToArray();
+    }
+
+    internal static string ValidatePersistedMethod(string method)
+    {
+        if (string.IsNullOrWhiteSpace(method) || method.Length > MaximumMetadataValueLength ||
+            method.Any(static character => char.IsWhiteSpace(character) || char.IsControl(character)))
+        {
+            throw new FormatException("The persisted HTTP method is invalid or exceeds the supported bound.");
+        }
+
+        string normalized = method.Trim().ToUpperInvariant();
+        if (!string.Equals(normalized, method, StringComparison.Ordinal))
+        {
+            throw new FormatException("The persisted HTTP method must be canonical uppercase text.");
+        }
+
+        return normalized;
+    }
+
+    private static string CanonicalizeRequirement(
+        IAuthorizationRequirement requirement,
+        CancellationToken cancellationToken)
     {
         Type type = requirement.GetType();
         string identity = StableTypeIdentity(type);
+        if (identity.Length > MaximumMetadataValueLength)
+        {
+            throw ResourceLimit("An authorization requirement type identity exceeds the supported metadata value length.");
+        }
+
         if (type == typeof(DenyAnonymousAuthorizationRequirement))
         {
             return "type=" + EncodeValue(identity);
@@ -155,30 +448,42 @@ internal static class AuthSurfaceCanonicalizer
         if (type == typeof(RolesAuthorizationRequirement))
         {
             var roles = (RolesAuthorizationRequirement)requirement;
-            return "type=" + EncodeValue(identity) + ";kind=roles;allowed=" + EncodeSequence(OrderedDistinctExact(roles.AllowedRoles));
+            return "type=" + EncodeValue(identity) + ";kind=roles;allowed=" + EncodeSequence(
+                BoundedDistinctValues(roles.AllowedRoles, splitCommaSeparated: false, trimValues: false, ignoreBlank: false, cancellationToken: cancellationToken));
         }
 
         if (type == typeof(ClaimsAuthorizationRequirement))
         {
             var claims = (ClaimsAuthorizationRequirement)requirement;
-            return "type=" + EncodeValue(identity) + ";kind=claims;claimType=" + EncodeValue(claims.ClaimType) + ";allowed=" + EncodeSequence(OrderedDistinctExact(claims.AllowedValues ?? []));
+            return "type=" + EncodeValue(identity) + ";kind=claims;claimType=" + EncodeValue(BoundedRequirementValue(claims.ClaimType)) + ";allowed=" + EncodeSequence(
+                BoundedDistinctValues(claims.AllowedValues ?? [], splitCommaSeparated: false, trimValues: false, ignoreBlank: false, cancellationToken: cancellationToken));
         }
 
         if (type == typeof(NameAuthorizationRequirement))
         {
             var name = (NameAuthorizationRequirement)requirement;
-            return "type=" + EncodeValue(identity) + ";kind=name;required=" + EncodeValue(name.RequiredName);
+            return "type=" + EncodeValue(identity) + ";kind=name;required=" + EncodeValue(BoundedRequirementValue(name.RequiredName));
         }
 
         if (type == typeof(OperationAuthorizationRequirement))
         {
             var operation = (OperationAuthorizationRequirement)requirement;
-            return "type=" + EncodeValue(identity) + ";kind=operation;name=" + EncodeValue(operation.Name);
+            return "type=" + EncodeValue(identity) + ";kind=operation;name=" + EncodeValue(BoundedRequirementValue(operation.Name));
         }
 
         // Derived/custom requirements are intentionally opaque. Their complete behavior is not
         // represented, so serializing a recognized base-class value would be misleading.
         return "type=" + EncodeValue(identity) + "|opaque";
+    }
+
+    private static string? BoundedRequirementValue(string? value)
+    {
+        if (value is not null && value.Length > MaximumMetadataValueLength)
+        {
+            throw ResourceLimit($"An authorization requirement value exceeds the supported {MaximumMetadataValueLength:N0}-character bound.");
+        }
+
+        return value;
     }
 
     private static string EncodeValue(string? value) =>

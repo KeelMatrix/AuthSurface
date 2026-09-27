@@ -67,6 +67,8 @@ foreach ($commit in $candidateCommits) {
         ($identityParts[2] -eq $canonicalName -and $identityParts[3] -eq $canonicalEmail) -or
         ($identityParts[0] -eq $canonicalName -and $identityParts[1] -eq $canonicalEmail -and
             $identityParts[2] -eq $githubWebName -and $identityParts[3] -eq $githubWebEmail) -or
+        (($identityParts[0] -eq $dependabotName -and $dependabotEmails -contains $identityParts[1]) -and
+            $identityParts[2] -eq $githubWebName -and $identityParts[3] -eq $githubWebEmail) -or
         ($identityParts[2] -eq $dependabotName -and $dependabotEmails -contains $identityParts[3])
 
     if (-not $authorAllowed) {

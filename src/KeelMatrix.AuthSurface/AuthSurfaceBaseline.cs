@@ -170,13 +170,22 @@ public sealed class AuthSurfaceBaseline
                     "The baseline contains duplicate canonical endpoint identities.");
             }
 
+            if (endpoints.Select(static endpoint => CanonicalRouteMethodKey(endpoint.Route, endpoint.Methods[0]))
+                .Distinct(StringComparer.Ordinal)
+                .Count() != endpoints.Length)
+            {
+                throw new AuthSurfaceBaselineException(
+                    AuthSurfaceDiagnosticCode.BaselineDuplicateIdentity,
+                    "The baseline contains duplicate route and HTTP method contracts.");
+            }
+
             return new AuthSurfaceBaseline(endpoints);
         }
         catch (AuthSurfaceBaselineException)
         {
             throw;
         }
-        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or FormatException)
         {
             throw new AuthSurfaceBaselineException(
                 AuthSurfaceDiagnosticCode.BaselineMalformed,
@@ -599,6 +608,46 @@ public sealed class AuthSurfaceBaseline
                 "A baseline endpoint has an invalid requirement fingerprint.");
         }
 
+        string method = AuthSurfaceCanonicalizer.ValidatePersistedMethod(document.Methods[0]);
+        string route;
+        string identity;
+        if (document.Identity is null)
+        {
+            try
+            {
+                route = AuthSurfaceCanonicalizer.NormalizeRoute(
+                    Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.Parse(document.Route));
+                identity = AuthSurfaceCanonicalizer.CanonicalIdentity(route, method);
+            }
+            catch (Exception exception) when (exception is not AuthSurfaceBaselineException)
+            {
+                throw new AuthSurfaceBaselineException(
+                    AuthSurfaceDiagnosticCode.BaselineMalformed,
+                    "A baseline endpoint route is malformed or cannot be canonicalized.",
+                    exception);
+            }
+        }
+        else
+        {
+            route = document.Route;
+            identity = AuthSurfaceCanonicalizer.ReadPersistedIdentity(document.Identity, route, method);
+            try
+            {
+                AuthSurfaceCanonicalizer.ValidateRouteShape(route, "route");
+            }
+            catch (AuthSurfaceBaselineException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is not AuthSurfaceBaselineException)
+            {
+                throw new AuthSurfaceBaselineException(
+                    AuthSurfaceDiagnosticCode.BaselineMalformed,
+                    "A baseline endpoint route is malformed or cannot be canonicalized.",
+                    exception);
+            }
+        }
+
         string calculatedFingerprint = AuthSurfaceCanonicalizer.Fingerprint(document.Requirements);
         if (!string.Equals(document.RequirementFingerprint, calculatedFingerprint, StringComparison.OrdinalIgnoreCase))
         {
@@ -610,8 +659,8 @@ public sealed class AuthSurfaceBaseline
         // The serialized requirement array is already the framework-produced sequence. Read it
         // verbatim so baseline comparison observes order and framework-preserved duplicates.
         return new AuthSurfaceEndpoint(
-            AuthSurfaceCanonicalizer.NormalizeRoute(Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.Parse(document.Route)),
-            document.Methods[0],
+            route,
+            method,
             kind,
             AuthSurfaceCanonicalizer.OrderedDistinctNonBlankExact(document.Policies),
             AuthSurfaceCanonicalizer.OrderedDistinctExact(document.Roles),
@@ -620,24 +669,44 @@ public sealed class AuthSurfaceBaseline
             document.UsesFallbackPolicy,
             document.Requirements,
             calculatedFingerprint,
-            string.IsNullOrWhiteSpace(document.Identity) ? null : document.Identity);
+            identity);
     }
 
     private static string? GetPersistedIdentity(AuthSurfaceEndpoint endpoint)
     {
         try
         {
-            return string.Equals(
+            if (string.Equals(
                 endpoint.Identity,
                 AuthSurfaceCanonicalizer.CanonicalIdentity(endpoint.Route, endpoint.Method),
-                StringComparison.Ordinal)
-                ? null
-                : endpoint.Identity;
+                StringComparison.Ordinal))
+            {
+                return null;
+            }
         }
-        catch (AuthSurfaceAnalysisException)
+        catch (Exception exception) when (exception is AuthSurfaceAnalysisException or FormatException or InvalidOperationException or ArgumentException or Microsoft.AspNetCore.Routing.Patterns.RoutePatternException)
         {
-            return endpoint.Identity;
+            // The lossless identity token below is the supported persistence path for
+            // programmatic patterns whose readable route cannot be parsed as route syntax.
         }
+
+        return AuthSurfaceCanonicalizer.CreatePersistedIdentity(endpoint.Route, endpoint.Identity);
+    }
+
+    private static string CanonicalRouteMethodKey(string route, string method)
+    {
+        try
+        {
+            route = AuthSurfaceCanonicalizer.NormalizeRoute(
+                Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.Parse(route));
+        }
+        catch (Exception exception) when (exception is Microsoft.AspNetCore.Routing.Patterns.RoutePatternException or AuthSurfaceAnalysisException or FormatException or InvalidOperationException or ArgumentException)
+        {
+            // A validated structural identity is the lossless representation for accepted
+            // programmatic display text that the framework parser cannot reconstruct.
+        }
+
+        return route + "\u001f" + method;
     }
 
     private sealed class BaselineDocument

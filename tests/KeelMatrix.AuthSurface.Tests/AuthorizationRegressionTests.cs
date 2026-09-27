@@ -144,6 +144,22 @@ public sealed class AuthorizationRegressionTests
     }
 
     [Fact]
+    public async Task AnonymousEndpointStillConstructsFallbackPolicyBeforeBypass()
+    {
+        await using WebApplication app = BuildApplication(
+            application => application.MapGet("/anonymous-fallback-failure", () => Results.Ok()).AllowAnonymous(),
+            configureServices: services => services.AddSingleton<IAuthorizationPolicyProvider, ThrowingFallbackPolicyProvider>());
+        await app.StartAsync();
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(app.Services).ScanAsync());
+
+        Assert.Equal("policy-resolution-failed", exception.Code);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await InvokeFrameworkAuthorizationMiddlewareAsync(app, "/anonymous-fallback-failure"));
+    }
+
+    [Fact]
     public async Task EmptyRequirementDataFallbackContributionChangeFailsClosedInBothApplications()
     {
         await using WebApplication baselineApp = BuildApplication(
@@ -751,6 +767,20 @@ public sealed class AuthorizationRegressionTests
                     .RequireClaim("scope", "equivalent")
                     .Build())
                 : inner.GetPolicyAsync(policyName);
+    }
+
+    private sealed class ThrowingFallbackPolicyProvider : IAuthorizationPolicyProvider
+    {
+        public bool AllowsCachingPolicies => false;
+
+        public Task<AuthorizationPolicy> GetDefaultPolicyAsync() =>
+            Task.FromResult(new AuthorizationPolicyBuilder().RequireClaim("scope", "default").Build());
+
+        public Task<AuthorizationPolicy?> GetFallbackPolicyAsync() =>
+            Task.FromException<AuthorizationPolicy?>(new InvalidOperationException("fallback provider failure"));
+
+        public Task<AuthorizationPolicy?> GetPolicyAsync(string policyName) =>
+            Task.FromResult<AuthorizationPolicy?>(null);
     }
 
     private sealed class TemporaryDirectory : IDisposable

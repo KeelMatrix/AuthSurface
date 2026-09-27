@@ -97,14 +97,24 @@ internal static class AuthSurfaceParameterPolicyRegistry
             throw AuthSurfaceCanonicalizer.RoutePolicyTooDeep();
         }
 
-        if (policy is CompositeRouteConstraint composite)
+        if (policy.GetType() == typeof(CompositeRouteConstraint))
         {
-            return RenderCompositePolicy(composite.Constraints, parameterName, "composite", budget, depth);
+            return RenderCompositePolicy(
+                ((CompositeRouteConstraint)policy).Constraints,
+                parameterName,
+                "composite",
+                budget,
+                depth);
         }
 
-        if (policy is OptionalRouteConstraint optional)
+        if (policy.GetType() == typeof(OptionalRouteConstraint))
         {
-            return RenderCompositePolicy([optional.InnerConstraint], parameterName, "optional", budget, depth);
+            return RenderCompositePolicy(
+                [((OptionalRouteConstraint)policy).InnerConstraint],
+                parameterName,
+                "optional",
+                budget,
+                depth);
         }
 
         if (!Specs.TryGetValue(policy.GetType(), out AuthSurfaceParameterPolicySpec? spec))

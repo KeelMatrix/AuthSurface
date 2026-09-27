@@ -135,6 +135,12 @@ public sealed class BaselineSchemaContractTests
     }
 
     [Fact]
+    public void MalformedRouteIsTranslatedToStructuredBaselineDiagnostic()
+    {
+        AssertRejected(CreateBaselineJson(route: "/{"), "baseline-malformed");
+    }
+
+    [Fact]
     public void CrLfBaselineInputRemainsReadable()
     {
         using TemporaryDirectory directory = new();

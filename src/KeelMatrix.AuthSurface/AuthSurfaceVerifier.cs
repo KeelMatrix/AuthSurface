@@ -89,6 +89,7 @@ public static class AuthSurfaceVerifier
 
     private static bool Equivalent(AuthSurfaceEndpoint expected, AuthSurfaceEndpoint actual) =>
         expected.Route == actual.Route &&
+        expected.Methods.SequenceEqual(actual.Methods, StringComparer.Ordinal) &&
         expected.AuthorizationKind == actual.AuthorizationKind &&
         expected.UsesDefaultPolicy == actual.UsesDefaultPolicy &&
         expected.UsesFallbackPolicy == actual.UsesFallbackPolicy &&
@@ -108,6 +109,17 @@ public static class AuthSurfaceVerifier
                 actual,
                 expected.Route,
                 actual.Route);
+        }
+
+        if (!expected.Methods.SequenceEqual(actual.Methods, StringComparer.Ordinal))
+        {
+            yield return Change(
+                AuthSurfaceDiagnosticCode.EndpointMethodChanged,
+                "HTTP method contract",
+                expected,
+                actual,
+                FormatList(expected.Methods),
+                FormatList(actual.Methods));
         }
 
         if (expected.AuthorizationKind != actual.AuthorizationKind)

@@ -58,7 +58,7 @@ try {
     $env:GIT_COMMITTER_NAME = 'GitHub'
     $env:GIT_COMMITTER_EMAIL = 'noreply@github.com'
     try {
-        Invoke-TempGit @('commit', '--quiet', '--author', 'KeelMatrix <keelmatrix@gmail.com>', '-m', 'Update changelog')
+        Invoke-TempGit @('commit', '--quiet', '--author', 'dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>', '-m', 'Update dependency metadata')
     }
     finally {
         if ($null -eq $oldCommitterName) { Remove-Item Env:GIT_COMMITTER_NAME -ErrorAction SilentlyContinue } else { $env:GIT_COMMITTER_NAME = $oldCommitterName }
@@ -116,6 +116,8 @@ try {
     $bodyPhrase = 'internal ' + 'orches' + 'tration detail'
     Invoke-TempGit @('commit', '--quiet', '-m', 'Add body control', '-m', $bodyPhrase)
     Assert-HygieneFails 'prohibited wording in a complete commit body'
+    Restore-CanonicalLatestCommit
+    & $checker -Root $tempRoot | Out-Null
 
     $shallowHead = (& git -C $tempRoot rev-parse HEAD).Trim()
     Set-Content -LiteralPath (Join-Path $tempRoot '.git/shallow') -Value $shallowHead -Encoding ascii

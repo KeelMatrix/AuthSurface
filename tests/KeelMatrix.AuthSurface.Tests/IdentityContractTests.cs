@@ -192,6 +192,102 @@ public sealed class IdentityContractTests
     }
 
     [Fact]
+    public async Task ProgrammaticDefaultWithQuestionMarkRoundTripsThroughPersistedIdentity()
+    {
+        RoutePattern pattern = RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("items")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "id",
+                        "x?",
+                        RoutePatternParameterKind.Standard),
+                ]),
+            ]);
+        var source = new DefaultEndpointDataSource([BuildEndpoint(pattern)]);
+        AuthSurfaceReport report = await new AuthSurfaceScanner([source], new AllowingPolicyProvider()).ScanAsync();
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+
+        string json = File.ReadAllText(path);
+        Assert.Contains("\"identity\"", json, StringComparison.Ordinal);
+        AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+
+        Assert.Equal(Assert.Single(report.Endpoints).Identity, Assert.Single(roundTrip.Endpoints).Identity);
+        Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid);
+    }
+
+    [Fact]
+    public async Task PersistedIdentityRejectsMethodKeyDisagreementWithoutRewriting()
+    {
+        RoutePattern pattern = RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("items")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart("id", "x?", RoutePatternParameterKind.Standard),
+                ]),
+            ]);
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        byte[] before = File.ReadAllBytes(path);
+        string mutated = File.ReadAllText(path).Replace("\"GET\"", "\"POST\"", StringComparison.Ordinal);
+        File.WriteAllText(path, mutated);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-malformed", exception.Code);
+        Assert.NotEmpty(before);
+        Assert.Equal(mutated, File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void BaselineRejectsDuplicateRouteMethodRecordsWithDifferentSuppliedKeys()
+    {
+        string fingerprint = AuthSurfaceCanonicalizer.Fingerprint([]);
+        string firstIdentity = AuthSurfaceCanonicalizer.CreatePersistedIdentity(
+            "/same",
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/first", "GET"));
+        string secondIdentity = AuthSurfaceCanonicalizer.CreatePersistedIdentity(
+            "/same",
+            AuthSurfaceCanonicalizer.CanonicalIdentity("/second", "GET"));
+        string endpoint(string identity) =>
+            "{\"route\":\"/same\",\"identity\":\"" + identity + "\",\"methods\":[\"GET\"]," +
+            "\"authorization\":\"ExplicitAnonymous\",\"policies\":[],\"roles\":[],\"schemes\":[]," +
+            "\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false,\"requirements\":[]," +
+            "\"requirementFingerprint\":\"" + fingerprint + "\"}";
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        File.WriteAllText(path, "{\"schemaVersion\":1,\"endpoints\":[" + endpoint(firstIdentity) + "," + endpoint(secondIdentity) + "]}");
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-duplicate-identity", exception.Code);
+    }
+
+    [Fact]
+    public void RouteNormalizationPreservesSlashPayloads()
+    {
+        string route = AuthSurfaceCanonicalizer.NormalizeRoute(
+            RoutePatternFactory.Parse("/items/{id:regex(^a//b$)}"));
+
+        Assert.Contains("^a//b$", route, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task DerivedRolesRequirementIsOpaqueAndDoesNotPopulateRoles()
     {
         var policy = new AuthorizationPolicyBuilder()
@@ -272,6 +368,51 @@ public sealed class IdentityContractTests
                 new AllowingPolicyProvider()).ScanAsync());
 
         Assert.Equal("metadata-limit", exception.Code);
+    }
+
+    [Fact]
+    public async Task LargeDirectPolicyFailsClosedBeforeRequirementCanonicalization()
+    {
+        var policyBuilder = new AuthorizationPolicyBuilder();
+        policyBuilder.AddRequirements(
+            Enumerable.Range(0, AuthSurfaceCanonicalizer.MaximumEffectiveRequirementCount + 1)
+                .Select(static index => (IAuthorizationRequirement)new ClaimsAuthorizationRequirement(
+                    "scope",
+                    [index.ToString(CultureInfo.InvariantCulture)]))
+                .ToArray());
+        RouteEndpointBuilder builder = new(
+            _ => Task.CompletedTask,
+            RoutePatternFactory.Parse("/large-direct-policy"),
+            order: 0);
+        builder.Metadata.Add(new HttpMethodMetadata(["GET"]));
+        builder.Metadata.Add(policyBuilder.Build());
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([(RouteEndpoint)builder.Build()])],
+                new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("resource-limit", exception.Code);
+    }
+
+    [Fact]
+    public async Task MethodExpansionCannotExceedOutputRecordBound()
+    {
+        RouteEndpointBuilder builder = new(
+            _ => Task.CompletedTask,
+            RoutePatternFactory.Parse("/many-methods"),
+            order: 0);
+        builder.Metadata.Add(new HttpMethodMetadata(
+            Enumerable.Range(0, AuthSurfaceCanonicalizer.MaximumEndpointCount + 1)
+                .Select(static index => "M" + index.ToString("D6", CultureInfo.InvariantCulture))));
+        builder.Metadata.Add(new AllowAnonymousAttribute());
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([(RouteEndpoint)builder.Build()])],
+                new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("endpoint-limit", exception.Code);
     }
 
     [Fact]
@@ -477,6 +618,24 @@ public sealed class IdentityContractTests
         Assert.Contains(nameof(UnsupportedRouteConstraint), exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task DerivedBuiltInWrapperPoliciesFailClosedBeforeWrapperDispatch()
+    {
+        foreach (IParameterPolicy policy in new IParameterPolicy[]
+        {
+            new DerivedCompositeConstraint([new IntRouteConstraint()]),
+            new DerivedOptionalConstraint(new IntRouteConstraint()),
+        })
+        {
+            AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+                async () => await new AuthSurfaceScanner(
+                    [new DefaultEndpointDataSource([BuildEndpoint(ProgrammaticPattern(policy))])],
+                    new AllowingPolicyProvider()).ScanAsync());
+
+            Assert.Equal("unsupported-parameter-policy", exception.Code);
+        }
+    }
+
     private static RoutePattern ProgrammaticPattern(IParameterPolicy policy) =>
         RoutePatternFactory.Pattern(
             rawText: null!,
@@ -556,6 +715,22 @@ public sealed class IdentityContractTests
 
     private sealed class UnsupportedParameterPolicy : IParameterPolicy
     {
+    }
+
+    private sealed class DerivedCompositeConstraint : CompositeRouteConstraint
+    {
+        public DerivedCompositeConstraint(IEnumerable<IRouteConstraint> constraints)
+            : base(constraints)
+        {
+        }
+    }
+
+    private sealed class DerivedOptionalConstraint : OptionalRouteConstraint
+    {
+        public DerivedOptionalConstraint(IRouteConstraint innerConstraint)
+            : base(innerConstraint)
+        {
+        }
     }
 
     private sealed class UnsupportedRouteConstraint : IRouteConstraint

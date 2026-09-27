@@ -46,12 +46,19 @@ public sealed class AuthSurfaceScanner
         options ??= new AuthSurfaceScanOptions();
         var endpoints = new List<AuthSurfaceEndpoint>();
         var identities = new HashSet<string>(StringComparer.Ordinal);
+        int inputEndpointCount = 0;
 
         foreach (EndpointDataSource dataSource in endpointDataSources)
         {
             foreach (Endpoint endpoint in dataSource.Endpoints)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (++inputEndpointCount > AuthSurfaceCanonicalizer.MaximumInputEndpointCount)
+                {
+                    throw AuthSurfaceCanonicalizer.ResourceLimit(
+                        $"The scan input exceeds the supported {AuthSurfaceCanonicalizer.MaximumInputEndpointCount:N0}-endpoint bound.");
+                }
+
                 if (endpoints.Count >= AuthSurfaceCanonicalizer.MaximumEndpointCount)
                 {
                     throw new AuthSurfaceAnalysisException(
@@ -75,13 +82,22 @@ public sealed class AuthSurfaceScanner
                     continue;
                 }
 
+                string[] methods = AuthSurfaceCanonicalizer.GetMethods(routeEndpoint, cancellationToken);
+                if (methods.Length > AuthSurfaceCanonicalizer.MaximumEndpointCount - endpoints.Count)
+                {
+                    throw new AuthSurfaceAnalysisException(
+                        AuthSurfaceDiagnosticCode.EndpointLimit,
+                        $"The scan would emit more than the supported {AuthSurfaceCanonicalizer.MaximumEndpointCount:N0}-endpoint bound.");
+                }
+
                 EndpointAuthorizationFacts facts = await ResolveAuthorizationAsync(
                     routeEndpoint,
                     route,
                     cancellationToken).ConfigureAwait(false);
 
-                foreach (string method in AuthSurfaceCanonicalizer.GetMethods(routeEndpoint))
+                foreach (string method in methods)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var record = new AuthSurfaceEndpoint(
                         route,
                         method,
@@ -160,49 +176,56 @@ public sealed class AuthSurfaceScanner
         var requirementDataRequirements = new List<IAuthorizationRequirement>();
         var policyContributions = new PolicyContributionTracker(policyProvider);
 
-        if (!isAnonymous || hasAnyAuthorizationMetadata)
+        try
         {
-            try
+            effectivePolicy = await AuthorizationPolicy.CombineAsync(
+                policyContributions,
+                authorizeData,
+                explicitPolicies).WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            foreach (IAuthorizationRequirementData metadata in requirementData)
             {
-                effectivePolicy = await AuthorizationPolicy.CombineAsync(
-                    policyContributions,
-                    authorizeData,
-                    explicitPolicies).WaitAsync(cancellationToken).ConfigureAwait(false);
-
-                foreach (IAuthorizationRequirementData metadata in requirementData)
+                cancellationToken.ThrowIfCancellationRequested();
+                foreach (IAuthorizationRequirement requirement in metadata.GetRequirements())
                 {
-                    foreach (IAuthorizationRequirement requirement in metadata.GetRequirements())
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (requirementDataRequirements.Count >= AuthSurfaceCanonicalizer.MaximumMetadataItems)
                     {
-                        if (requirementDataRequirements.Count >= AuthSurfaceCanonicalizer.MaximumMetadataItems)
-                        {
-                            throw new AuthSurfaceAnalysisException(
-                                AuthSurfaceDiagnosticCode.MetadataLimit,
-                                $"Endpoint '{route}' exceeds the supported authorization requirement-data bound of {AuthSurfaceCanonicalizer.MaximumMetadataItems:N0} requirements.");
-                        }
-
-                        requirementDataRequirements.Add(requirement);
+                        throw new AuthSurfaceAnalysisException(
+                            AuthSurfaceDiagnosticCode.MetadataLimit,
+                            $"Endpoint '{route}' exceeds the supported authorization requirement-data bound of {AuthSurfaceCanonicalizer.MaximumMetadataItems:N0} requirements.");
                     }
-                }
 
-                if (requirementData.Count > 0)
-                {
-                    var requirementPolicyBuilder = new AuthorizationPolicyBuilder();
-                    foreach (IAuthorizationRequirement requirement in requirementDataRequirements)
-                    {
-                        requirementPolicyBuilder.AddRequirements(requirement);
-                    }
-                    AuthorizationPolicy requirementPolicy = requirementPolicyBuilder.Build();
-                    effectivePolicy = effectivePolicy is null
-                        ? requirementPolicy
-                        : AuthorizationPolicy.Combine(effectivePolicy, requirementPolicy);
+                    requirementDataRequirements.Add(requirement);
                 }
             }
-            catch (Exception exception) when (exception is not OperationCanceledException && exception is not AuthSurfaceAnalysisException)
+
+            if (requirementData.Count > 0)
             {
-                throw new AuthSurfaceAnalysisException(
-                    AuthSurfaceDiagnosticCode.PolicyResolutionFailed,
-                    $"Authorization policy resolution failed for '{route}'. Register a resolvable policy provider and retry.");
+                var requirementPolicyBuilder = new AuthorizationPolicyBuilder();
+                foreach (IAuthorizationRequirement requirement in requirementDataRequirements)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    requirementPolicyBuilder.AddRequirements(requirement);
+                }
+
+                AuthorizationPolicy requirementPolicy = requirementPolicyBuilder.Build();
+                effectivePolicy = effectivePolicy is null
+                    ? requirementPolicy
+                    : AuthorizationPolicy.Combine(effectivePolicy, requirementPolicy);
             }
+
+            if (effectivePolicy?.Requirements.Count > AuthSurfaceCanonicalizer.MaximumEffectiveRequirementCount)
+            {
+                throw AuthSurfaceCanonicalizer.ResourceLimit(
+                    $"Endpoint '{route}' exceeds the supported effective authorization requirement bound of {AuthSurfaceCanonicalizer.MaximumEffectiveRequirementCount:N0} requirements.");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException && exception is not AuthSurfaceAnalysisException)
+        {
+            throw new AuthSurfaceAnalysisException(
+                AuthSurfaceDiagnosticCode.PolicyResolutionFailed,
+                $"Authorization policy resolution failed for '{route}'. Register a resolvable policy provider and retry.");
         }
 
         AuthSurfaceAuthorizationKind kind;
@@ -225,30 +248,43 @@ public sealed class AuthSurfaceScanner
             kind = AuthSurfaceAuthorizationKind.Unprotected;
         }
 
-        string[] policies = AuthSurfaceCanonicalizer.OrderedDistinctNonBlankExact(
-            authorizeData.Select(static data => data.Policy).Where(static value => !string.IsNullOrWhiteSpace(value))!);
-        string[] rolesFromMetadata = AuthSurfaceCanonicalizer.SplitMetadataValues(
-            authorizeData.Select(static data => data.Roles));
-        string[] schemesFromMetadata = AuthSurfaceCanonicalizer.SplitMetadataValues(
-            authorizeData.Select(static data => data.AuthenticationSchemes));
-        string[] policyRoles = effectivePolicy is null
+        string[] policies = AuthSurfaceCanonicalizer.BoundedDistinctValues(
+            authorizeData.Select(static data => data.Policy),
+            splitCommaSeparated: false,
+            trimValues: false,
+            ignoreBlank: true,
+            cancellationToken: cancellationToken);
+        string[] rolesFromMetadata = AuthSurfaceCanonicalizer.BoundedDistinctValues(
+            authorizeData.Select(static data => data.Roles),
+            splitCommaSeparated: true,
+            trimValues: true,
+            ignoreBlank: true,
+            cancellationToken: cancellationToken);
+        string[] schemesFromMetadata = AuthSurfaceCanonicalizer.BoundedDistinctValues(
+            authorizeData.Select(static data => data.AuthenticationSchemes),
+            splitCommaSeparated: true,
+            trimValues: true,
+            ignoreBlank: true,
+            cancellationToken: cancellationToken);
+        IEnumerable<string> policyRoles = effectivePolicy is null
             ? []
             : effectivePolicy.Requirements
                 .Where(static requirement => requirement.GetType() == typeof(RolesAuthorizationRequirement))
                 .Cast<RolesAuthorizationRequirement>()
-                .SelectMany(static requirement => requirement.AllowedRoles)
-                .ToArray();
-        string[] roles = rolesFromMetadata
-            .Concat(AuthSurfaceCanonicalizer.OrderedDistinctExact(policyRoles))
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(static value => value, StringComparer.Ordinal)
-            .ToArray();
-        string[] schemes = schemesFromMetadata
-            .Concat(AuthSurfaceCanonicalizer.OrderedDistinctExact(effectivePolicy?.AuthenticationSchemes ?? []))
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(static value => value, StringComparer.Ordinal)
-            .ToArray();
-        string[] requirements = AuthSurfaceCanonicalizer.CanonicalizeRequirements(effectivePolicy);
+                .SelectMany(static requirement => requirement.AllowedRoles);
+        string[] roles = AuthSurfaceCanonicalizer.BoundedDistinctValues(
+            rolesFromMetadata.Cast<string?>().Concat(policyRoles),
+                splitCommaSeparated: false,
+                trimValues: false,
+                ignoreBlank: false,
+                cancellationToken: cancellationToken);
+        string[] schemes = AuthSurfaceCanonicalizer.BoundedDistinctValues(
+            schemesFromMetadata.Cast<string?>().Concat(effectivePolicy?.AuthenticationSchemes ?? []),
+                splitCommaSeparated: false,
+                trimValues: false,
+                ignoreBlank: false,
+                cancellationToken: cancellationToken);
+        string[] requirements = AuthSurfaceCanonicalizer.CanonicalizeRequirements(effectivePolicy, cancellationToken);
         string fingerprint = AuthSurfaceCanonicalizer.Fingerprint(requirements);
 
         return new EndpointAuthorizationFacts(
