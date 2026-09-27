@@ -49,7 +49,7 @@ The package README is the canonical consumer guide for updates, classifications,
 
 `AuthSurfaceScanOptions.StrictFallbackPolicy` rejects endpoints whose effective authorization policy includes fallback-policy contribution. This includes an explicitly protected endpoint when its requirement data or other explicit metadata is combined with fallback. The `fallback-policy-endpoint` diagnostic means fallback contributed to the effective policy; it does not mean the endpoint lacked endpoint-level metadata. Supply a complete endpoint/default/named/direct policy path that prevents fallback from contributing, or disable strict fallback enforcement intentionally.
 
-Endpoint identity follows the bounded canonical-representation contract in [`docs/endpoint-identity.md`](docs/endpoint-identity.md). It normalizes only the listed framework equivalences and does not claim general routing semantic equivalence.
+Endpoint identity follows the bounded canonical-representation contract in [`docs/endpoint-identity.md`](docs/endpoint-identity.md). It normalizes only the listed framework equivalences and does not claim general routing semantic equivalence. Textual and programmatic parameter policies retain separate provenance markers, including when content begins with the reserved `programmatic:` marker. Each scan also has cumulative bounds for route/policy expansion and authorization metadata.
 
 ## Diagnostic codes
 

@@ -6,6 +6,8 @@ All notable changes to this package will be documented here.
 
 - Hardened baseline identity validation and route persistence for method binding, malformed/stale records, programmatic defaults, and duplicate route/method entries.
 - Matched anonymous policy construction to ASP.NET Core fallback-policy behavior, enforced cumulative scanner-owned expansion/resource budgets across route methods and authorization values, and rejected derived route-policy wrappers that are not exact supported runtime types.
+- Preserved distinct textual and programmatic route-policy provenance, including for content-bearing values that begin with the reserved `programmatic:` marker.
+- Applied cumulative scan-wide bounds to route rendering/policy expansion, authorization metadata, and requirement-data expansion while retaining per-route limits.
 - Corrected repository-hygiene coverage for Dependabot web-flow commits and isolated shallow-history negative coverage.
 
 ## 0.1.0 - Pre-release

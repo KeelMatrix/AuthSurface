@@ -17,6 +17,9 @@ internal static class AuthSurfaceCanonicalizer
     internal const int MaximumRoutePolicyLength = 8_192;
     internal const int MaximumRoutePolicyDepth = 32;
     internal const int MaximumRoutePolicyWork = 100_000;
+    internal const int MaximumScanRoutePolicyWork = 100_000;
+    internal const int MaximumScanMetadataItems = 100_000;
+    internal const int MaximumScanRequirementDataRequirements = 8_192;
     internal const int MaximumPersistedIdentityLength = 65_536;
     internal const int MaximumInputEndpointCount = 100_000;
     internal const int MaximumMethodsPerEndpoint = 1_048_576;
@@ -34,9 +37,15 @@ internal static class AuthSurfaceCanonicalizer
     private const string ProgrammaticPolicyPrefix = "programmatic:";
 
     internal static string NormalizeRoute(RoutePattern pattern, CancellationToken cancellationToken = default)
+        => NormalizeRoute(pattern, scanBudget: null, cancellationToken);
+
+    internal static string NormalizeRoute(
+        RoutePattern pattern,
+        AuthSurfaceScanBudget? scanBudget,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(pattern);
-        var budget = new AuthSurfaceCanonicalizationBudget();
+        var budget = new AuthSurfaceCanonicalizationBudget(scanBudget);
         string route = RenderPattern(pattern, false, false, true, budget, cancellationToken).Trim();
         if (route.StartsWith("~/", StringComparison.Ordinal))
         {
@@ -180,6 +189,13 @@ internal static class AuthSurfaceCanonicalizer
         RoutePattern pattern,
         string method,
         CancellationToken cancellationToken = default)
+        => CanonicalIdentity(pattern, method, scanBudget: null, cancellationToken);
+
+    internal static string CanonicalIdentity(
+        RoutePattern pattern,
+        string method,
+        AuthSurfaceScanBudget? scanBudget,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(pattern);
         ArgumentNullException.ThrowIfNull(method);
@@ -188,7 +204,7 @@ internal static class AuthSurfaceCanonicalizer
             caseFoldRouteComponents: true,
             canonicalizePolicies: true,
             escapeRouteSyntax: true,
-            new AuthSurfaceCanonicalizationBudget(),
+            new AuthSurfaceCanonicalizationBudget(scanBudget),
             cancellationToken) + IdentityMethodSeparator + method.ToUpperInvariant();
     }
 
@@ -348,7 +364,9 @@ internal static class AuthSurfaceCanonicalizer
                 ? expected.Replace("text:", string.Empty, StringComparison.Ordinal)
                 : expected;
             if (!string.Equals(identity, expected, StringComparison.Ordinal) &&
-                !string.Equals(identity, programmaticExpected, StringComparison.Ordinal))
+                !string.Equals(identity, programmaticExpected, StringComparison.Ordinal) &&
+                !(route.Contains("programmatic:", StringComparison.Ordinal) &&
+                    IdentityRouteMatchesDisplay(route, identity)))
             {
                 throw new FormatException("The persisted identity does not match the endpoint route and HTTP method.");
             }
@@ -359,6 +377,18 @@ internal static class AuthSurfaceCanonicalizer
             // a question mark, cannot be reconstructed from their readable route text. The
             // persisted token remains the structural representation for those bounded cases.
         }
+    }
+
+    private static bool IdentityRouteMatchesDisplay(string route, string identity)
+    {
+        int separator = identity.LastIndexOf(IdentityMethodSeparator);
+        if (separator <= 0)
+        {
+            return false;
+        }
+
+        string structuralRoute = identity[..separator].Replace(TextualPolicyPrefix, string.Empty, StringComparison.Ordinal);
+        return string.Equals(structuralRoute, route, StringComparison.OrdinalIgnoreCase);
     }
 
     internal static string Fingerprint(IEnumerable<string> requirements, CancellationToken cancellationToken = default)
@@ -385,6 +415,10 @@ internal static class AuthSurfaceCanonicalizer
     internal static AuthSurfaceAnalysisException RoutePolicyTooComplex() =>
         new(AuthSurfaceDiagnosticCode.RoutePolicyTooComplex,
             $"The route policy expression exceeds the supported work bound of {MaximumRoutePolicyWork:N0} operations.");
+
+    internal static AuthSurfaceAnalysisException ScanRoutePolicyTooComplex() =>
+        new(AuthSurfaceDiagnosticCode.RoutePolicyTooComplex,
+            $"The scan-wide route rendering and policy expansion exceeds the supported cumulative work bound of {MaximumScanRoutePolicyWork:N0} operations.");
 
     internal static AuthSurfaceAnalysisException ResourceLimit(string message) =>
         new(AuthSurfaceDiagnosticCode.ResourceLimit, message);
@@ -692,7 +726,7 @@ internal static class AuthSurfaceCanonicalizer
             budget,
             cancellationToken);
         return canonicalizePolicies
-            ? CanonicalizePolicyContent(rendered, budget, depth: 0, cancellationToken)
+            ? CanonicalizeGeneratedPolicyContent(rendered, budget, depth: 0, cancellationToken)
             : rendered;
     }
 
@@ -704,16 +738,25 @@ internal static class AuthSurfaceCanonicalizer
     {
         string trimmed = content.Trim();
         budget.EnterPolicy(depth, trimmed.Length);
-        if (trimmed.StartsWith(ProgrammaticPolicyPrefix, StringComparison.Ordinal))
-        {
-            return ProgrammaticPolicyPrefix + CanonicalizeProgrammaticPolicyContent(
-                trimmed[ProgrammaticPolicyPrefix.Length..],
-                budget,
-                depth,
-                cancellationToken);
-        }
-
         return TextualPolicyPrefix + CanonicalizeTextualPolicyContent(trimmed, budget, depth, cancellationToken);
+    }
+
+    private static string CanonicalizeGeneratedPolicyContent(
+        string content,
+        AuthSurfaceCanonicalizationBudget budget,
+        int depth,
+        CancellationToken cancellationToken)
+    {
+        string trimmed = content.Trim();
+        budget.EnterPolicy(depth, trimmed.Length);
+        string payload = trimmed.StartsWith(ProgrammaticPolicyPrefix, StringComparison.Ordinal)
+            ? trimmed[ProgrammaticPolicyPrefix.Length..]
+            : trimmed;
+        return ProgrammaticPolicyPrefix + CanonicalizeProgrammaticPolicyContent(
+            payload,
+            budget,
+            depth,
+            cancellationToken);
     }
 
     private static string CanonicalizeTextualPolicyContent(
@@ -856,7 +899,10 @@ internal static class AuthSurfaceCanonicalizer
 
 internal sealed class AuthSurfaceCanonicalizationBudget
 {
+    private readonly AuthSurfaceScanBudget? scanBudget;
     private int work;
+
+    internal AuthSurfaceCanonicalizationBudget(AuthSurfaceScanBudget? scanBudget = null) => this.scanBudget = scanBudget;
 
     internal void Visit(int amount = 1)
     {
@@ -865,6 +911,7 @@ internal sealed class AuthSurfaceCanonicalizationBudget
             throw AuthSurfaceCanonicalizer.RoutePolicyTooComplex();
         }
 
+        scanBudget?.ConsumeRoutePolicyWork(amount);
         work += amount;
     }
 

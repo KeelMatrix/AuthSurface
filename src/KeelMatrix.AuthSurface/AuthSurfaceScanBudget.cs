@@ -2,10 +2,45 @@ namespace KeelMatrix.AuthSurface;
 
 internal sealed class AuthSurfaceScanBudget
 {
+    private int routePolicyWork;
+    private int metadataItemCount;
+    private int requirementDataRequirementCount;
     private int nestedValueCount;
     private int nestedValueCharacters;
     private int effectiveRequirementCount;
     private int canonicalRequirementCharacters;
+
+    internal void ConsumeRoutePolicyWork(int amount)
+    {
+        if (amount < 0 || routePolicyWork > AuthSurfaceCanonicalizer.MaximumScanRoutePolicyWork - amount)
+        {
+            throw AuthSurfaceCanonicalizer.ScanRoutePolicyTooComplex();
+        }
+
+        routePolicyWork += amount;
+    }
+
+    internal void ConsumeMetadataItems(int count)
+    {
+        if (count < 0 || metadataItemCount > AuthSurfaceCanonicalizer.MaximumScanMetadataItems - count)
+        {
+            throw AuthSurfaceCanonicalizer.ResourceLimit(
+                $"The scan exceeds the supported cumulative authorization metadata bound of {AuthSurfaceCanonicalizer.MaximumScanMetadataItems:N0} items.");
+        }
+
+        metadataItemCount += count;
+    }
+
+    internal void ConsumeRequirementDataRequirements(int count)
+    {
+        if (count < 0 || requirementDataRequirementCount > AuthSurfaceCanonicalizer.MaximumScanRequirementDataRequirements - count)
+        {
+            throw AuthSurfaceCanonicalizer.ResourceLimit(
+                $"The scan exceeds the supported cumulative requirement-data expansion bound of {AuthSurfaceCanonicalizer.MaximumScanRequirementDataRequirements:N0} requirements.");
+        }
+
+        requirementDataRequirementCount += count;
+    }
 
     internal void ConsumeNestedValue(int characters)
     {

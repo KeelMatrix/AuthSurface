@@ -128,6 +128,52 @@ public sealed class IdentityContractTests
         Assert.NotEqual(report.Endpoints[0].Route, report.Endpoints[1].Route);
     }
 
+    [Theory]
+    [MemberData(nameof(ReservedProgrammaticMarkerCases))]
+    public void ReservedProgrammaticMarkerNeverAliasesItsRuntimePolicy(
+        string textualPolicy,
+        IParameterPolicy runtimePolicy)
+    {
+        string textualIdentity = AuthSurfaceCanonicalizer.CanonicalIdentity(
+            TextualPattern(textualPolicy),
+            "GET");
+        string programmaticIdentity = AuthSurfaceCanonicalizer.CanonicalIdentity(
+            ProgrammaticPattern(runtimePolicy),
+            "GET");
+
+        Assert.Contains("text:programmatic:", textualIdentity, StringComparison.Ordinal);
+        Assert.Contains("programmatic:", programmaticIdentity, StringComparison.Ordinal);
+        Assert.NotEqual(textualIdentity, programmaticIdentity);
+    }
+
+    [Fact]
+    public async Task ReservedProgrammaticMarkerProvenanceChangeIsAReadableBaselineDiff()
+    {
+        RoutePattern textualPattern = TextualPattern("programmatic:int");
+        RoutePattern runtimePattern = ProgrammaticPattern(new IntRouteConstraint());
+        var textualSource = new DefaultEndpointDataSource([BuildEndpoint(textualPattern)]);
+        var runtimeSource = new DefaultEndpointDataSource([BuildEndpoint(runtimePattern)]);
+
+        AuthSurfaceReport baselineReport = await new AuthSurfaceScanner(
+            [textualSource],
+            new AllowingPolicyProvider()).ScanAsync();
+        AuthSurfaceReport currentReport = await new AuthSurfaceScanner(
+            [runtimeSource],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        AuthSurfaceEndpoint baselineEndpoint = Assert.Single(baselineReport.Endpoints);
+        Assert.Equal(baselineEndpoint.Route, Assert.Single(currentReport.Endpoints).Route);
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(baselineReport, path, overwrite: false);
+
+        AuthSurfaceVerificationResult result = AuthSurfaceVerifier.Compare(currentReport, path);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Violations, violation => violation.Code == "endpoint-added");
+        Assert.Contains(result.Violations, violation => violation.Code == "endpoint-removed");
+    }
+
     [Fact]
     public void RawTextDoesNotDiscardMergedDefaultsOrParameterPolicies()
     {
@@ -708,6 +754,36 @@ public sealed class IdentityContractTests
     }
 
     private static RoutePattern ProgrammaticPattern(IParameterPolicy policy) =>
+        RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([RoutePatternFactory.LiteralPart("items")]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "id",
+                        null!,
+                        RoutePatternParameterKind.Standard,
+                        [RoutePatternFactory.ParameterPolicy(policy)]),
+                ]),
+            ]);
+
+    public static IEnumerable<object[]> ReservedProgrammaticMarkerCases() =>
+    new (string TextualPolicy, Func<IParameterPolicy> RuntimePolicy)[]
+    {
+        ("programmatic:int", static () => new IntRouteConstraint()),
+        ("programmatic:composite(int,min(2))", static () => new CompositeRouteConstraint([new IntRouteConstraint(), new MinRouteConstraint(2)])),
+        ("programmatic:optional(int)", static () => new OptionalRouteConstraint(new IntRouteConstraint())),
+        ("programmatic:regex(^\\d+$;options=521)", static () => new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+            "^\\d+$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+            System.Text.RegularExpressions.RegexOptions.Compiled))),
+        ("programmatic:httpMethod(GET,POST)", static () => new HttpMethodRouteConstraint(["POST", "GET"])),
+    }
+    .Select(static row => new object[] { row.TextualPolicy, row.RuntimePolicy() });
+
+    private static RoutePattern TextualPattern(string policy) =>
         RoutePatternFactory.Pattern(
             rawText: null!,
             segments:

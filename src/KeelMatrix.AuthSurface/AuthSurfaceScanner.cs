@@ -37,7 +37,7 @@ public sealed class AuthSurfaceScanner
 
     /// <summary>Scans runtime route endpoints once and returns a deterministic report.</summary>
     /// <param name="options">Optional inclusion and strictness options.</param>
-    /// <param name="cancellationToken">Token used to cancel policy resolution.</param>
+    /// <param name="cancellationToken">Token used to cancel scanner-owned endpoint enumeration, route canonicalization, and policy resolution.</param>
     /// <returns>The completed scan report.</returns>
     public async Task<AuthSurfaceReport> ScanAsync(
         AuthSurfaceScanOptions? options = null,
@@ -70,7 +70,10 @@ public sealed class AuthSurfaceScanner
                     continue;
                 }
 
-                string route = AuthSurfaceCanonicalizer.NormalizeRoute(routeEndpoint.RoutePattern, cancellationToken);
+                string route = AuthSurfaceCanonicalizer.NormalizeRoute(
+                    routeEndpoint.RoutePattern,
+                    scanBudget,
+                    cancellationToken);
                 if (options.ExcludedRoutePatterns.Contains(route))
                 {
                     continue;
@@ -106,7 +109,11 @@ public sealed class AuthSurfaceScanner
                         facts.UsesFallbackPolicy,
                         facts.Requirements,
                         facts.RequirementFingerprint,
-                        AuthSurfaceCanonicalizer.CanonicalIdentity(routeEndpoint.RoutePattern, method, cancellationToken));
+                        AuthSurfaceCanonicalizer.CanonicalIdentity(
+                            routeEndpoint.RoutePattern,
+                            method,
+                            scanBudget,
+                            cancellationToken));
 
                     if (!identities.Add(record.Identity))
                     {
@@ -161,14 +168,17 @@ public sealed class AuthSurfaceScanner
         IReadOnlyList<AuthorizationPolicy> explicitPolicies = endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>();
         IReadOnlyList<IAuthorizationRequirementData> requirementData =
             endpoint.Metadata.GetOrderedMetadata<IAuthorizationRequirementData>();
+        IReadOnlyList<IAllowAnonymous> anonymousMetadata = endpoint.Metadata.GetOrderedMetadata<IAllowAnonymous>();
+        int authorizationMetadataCount = authorizeData.Count + explicitPolicies.Count + requirementData.Count + anonymousMetadata.Count;
         bool hasEndpointAuthorization = authorizeData.Count > 0 || explicitPolicies.Count > 0;
         bool hasAnyAuthorizationMetadata = hasEndpointAuthorization || requirementData.Count > 0;
-        if (authorizeData.Count + explicitPolicies.Count + requirementData.Count > AuthSurfaceCanonicalizer.MaximumMetadataItems)
+        if (authorizationMetadataCount > AuthSurfaceCanonicalizer.MaximumMetadataItems)
         {
             throw new AuthSurfaceAnalysisException(
                 AuthSurfaceDiagnosticCode.MetadataLimit,
                 $"Endpoint '{route}' exceeds the supported authorization metadata bound of {AuthSurfaceCanonicalizer.MaximumMetadataItems:N0} items.");
         }
+        scanBudget.ConsumeMetadataItems(authorizationMetadataCount);
         bool isAnonymous = endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null;
         AuthorizationPolicy? effectivePolicy = null;
         var requirementDataRequirements = new List<IAuthorizationRequirement>();
@@ -197,6 +207,8 @@ public sealed class AuthSurfaceScanner
                     requirementDataRequirements.Add(requirement);
                 }
             }
+
+            scanBudget.ConsumeRequirementDataRequirements(requirementDataRequirements.Count);
 
             if (requirementData.Count > 0)
             {
