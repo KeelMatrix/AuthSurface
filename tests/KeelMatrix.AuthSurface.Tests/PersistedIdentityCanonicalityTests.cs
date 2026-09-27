@@ -14,6 +14,93 @@ namespace KeelMatrix.AuthSurface.Tests;
 public sealed class PersistedIdentityCanonicalityTests
 {
     [Fact]
+    public async Task WriterEmittableTextualAndProgrammaticRoutesRoundTripThroughBaseline()
+    {
+        RoutePattern[] patterns =
+        [
+            RoutePatternFactory.Parse("/items/{id:int}"),
+            RoutePatternFactory.Parse("/items/{id=default}"),
+            RoutePatternFactory.Parse("/items/{id?}"),
+            RoutePatternFactory.Parse("/files/{*path}"),
+            RoutePatternFactory.Parse("/files/{**path}"),
+            RoutePatternFactory.Parse("/v1/pre-{id}.json"),
+            RoutePatternFactory.Parse("/items/{id:regex(^\\d+$)}"),
+            RoutePatternFactory.Parse("/items/{id:composite(int,min(2))}"),
+            RoutePatternFactory.Parse("/items/{id:optional(composite(int,min(2)))}"),
+            RoutePatternFactory.Parse("/café/😀/{id:int=значение}"),
+            ProgrammaticPatternWithDefault(
+                new OptionalRouteConstraint(new CompositeRouteConstraint([
+                    new IntRouteConstraint(),
+                    new MinRouteConstraint(2),
+                ])),
+                "значение"),
+            ProgrammaticAstralPattern(),
+        ];
+
+        using var directory = new TemporaryDirectory();
+        int index = 0;
+        foreach (RoutePattern pattern in patterns)
+        {
+            AuthSurfaceReport report = await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+                new AllowingPolicyProvider()).ScanAsync();
+            AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+            string path = Path.Combine(directory.Path, (++index).ToString(CultureInfo.InvariantCulture), "authsurface.json");
+
+            AuthSurfaceBaseline.Create(report, path, overwrite: false);
+            AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+
+            Assert.Equal(endpoint.Identity, Assert.Single(roundTrip.Endpoints).Identity);
+            Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid, endpoint.Route);
+        }
+    }
+
+    [Theory]
+    [InlineData("empty-parameter-name")]
+    [InlineData("slash-in-parameter-name")]
+    [InlineData("contentless-policy-without-provenance")]
+    [InlineData("catch-all-parameter-is-optional")]
+    [InlineData("duplicate-parameter-part")]
+    public async Task NonWriterEmittableBindingFieldsAreRejectedWithoutRewriting(string mutationCase)
+    {
+        RoutePattern pattern = mutationCase == "catch-all-parameter-is-optional"
+            ? CatchAllPattern(null!)
+            : ProgrammaticPatternWithDefault(new IntRouteConstraint(), "x?");
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+            new AllowingPolicyProvider()).ScanAsync();
+        AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        string json = File.ReadAllText(path);
+        using JsonDocument document = JsonDocument.Parse(json);
+        string persistedIdentity = document.RootElement
+            .GetProperty("endpoints")[0]
+            .GetProperty("identity")
+            .GetString()!;
+
+        (string mutatedRoute, string mutatedIdentity) = MutateWriterBinding(
+            persistedIdentity,
+            endpoint.Route,
+            mutationCase);
+        string mutatedJson = json
+            .Replace("\"route\": \"" + endpoint.Route + "\"", "\"route\": \"" + mutatedRoute + "\"", StringComparison.Ordinal)
+            .Replace(persistedIdentity, mutatedIdentity, StringComparison.Ordinal);
+        Assert.Contains("\"route\": \"" + mutatedRoute + "\"", mutatedJson, StringComparison.Ordinal);
+        Assert.Contains(mutatedIdentity, mutatedJson, StringComparison.Ordinal);
+        File.WriteAllText(path, mutatedJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        byte[] before = File.ReadAllBytes(path);
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Read(path));
+
+        Assert.Equal("baseline-malformed", exception.Code);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    [Fact]
     public async Task NonCanonicalBindingRepresentationsAreRejectedWithoutRewriting()
     {
         RoutePattern pattern = RoutePatternFactory.Pattern(
@@ -318,6 +405,95 @@ public sealed class PersistedIdentityCanonicalityTests
 
     private static int ReadInt32(byte[] bytes, int offset) => BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(offset));
 
+    private static (string Route, string Identity) MutateWriterBinding(
+        string persistedIdentity,
+        string route,
+        string mutationCase)
+    {
+        string payload = DecodeUtf8(persistedIdentity[3..]);
+        int separator = payload.IndexOf('\u001e');
+        Assert.True(separator > 0);
+        string identityToken = payload[(separator + 1)..];
+        Assert.StartsWith(PersistedIdentityBinding.Prefix, identityToken, StringComparison.Ordinal);
+
+        string encodedBinding = identityToken[PersistedIdentityBinding.Prefix.Length..];
+        PersistedIdentityBinding binding = PersistedIdentityBinding.Deserialize(DecodeBase64Url(encodedBinding));
+        PersistedIdentityBinding.ParameterPart originalParameter = Assert.IsType<PersistedIdentityBinding.ParameterPart>(
+            binding.Segments[1].Parts[0]);
+
+        string mutatedRoute;
+        string mutatedIdentityRoute;
+        PersistedIdentityBinding.ParameterPart mutatedParameter;
+        switch (mutationCase)
+        {
+            case "empty-parameter-name":
+                mutatedParameter = new PersistedIdentityBinding.ParameterPart(
+                    string.Empty,
+                    originalParameter.IsCatchAll,
+                    originalParameter.EncodeSlashes,
+                    originalParameter.IsOptional,
+                    originalParameter.Default,
+                    originalParameter.Policies);
+                mutatedRoute = route.Replace("{id:", "{:", StringComparison.Ordinal);
+                mutatedIdentityRoute = binding.IdentityRoute!.Replace("{ID:", "{:", StringComparison.Ordinal);
+                break;
+            case "slash-in-parameter-name":
+                mutatedParameter = new PersistedIdentityBinding.ParameterPart(
+                    "a/b",
+                    originalParameter.IsCatchAll,
+                    originalParameter.EncodeSlashes,
+                    originalParameter.IsOptional,
+                    originalParameter.Default,
+                    originalParameter.Policies);
+                mutatedRoute = route.Replace("{id:", "{a/b:", StringComparison.Ordinal);
+                mutatedIdentityRoute = binding.IdentityRoute!.Replace("{ID:", "{A/B:", StringComparison.Ordinal);
+                break;
+            case "contentless-policy-without-provenance":
+                mutatedParameter = new PersistedIdentityBinding.ParameterPart(
+                    originalParameter.Name,
+                    originalParameter.IsCatchAll,
+                    originalParameter.EncodeSlashes,
+                    originalParameter.IsOptional,
+                    originalParameter.Default,
+                    originalParameter.Policies
+                        .Select(static policy => new PersistedIdentityBinding.Policy(isContent: false, "int"))
+                        .ToArray());
+                mutatedRoute = route.Replace(":programmatic:int", ":int", StringComparison.Ordinal);
+                mutatedIdentityRoute = binding.IdentityRoute!;
+                break;
+            case "catch-all-parameter-is-optional":
+                mutatedParameter = new PersistedIdentityBinding.ParameterPart(
+                    originalParameter.Name,
+                    originalParameter.IsCatchAll,
+                    originalParameter.EncodeSlashes,
+                    true,
+                    originalParameter.Default,
+                    originalParameter.Policies);
+                mutatedRoute = route.Replace("}", "?}", StringComparison.Ordinal);
+                mutatedIdentityRoute = binding.IdentityRoute!.Replace("}", "?}", StringComparison.Ordinal);
+                break;
+            case "duplicate-parameter-part":
+                mutatedParameter = originalParameter;
+                mutatedRoute = route.Replace("}", "}{" + originalParameter.Name + ":programmatic:int=x?}", StringComparison.Ordinal);
+                mutatedIdentityRoute = binding.IdentityRoute!.Replace("}", "}{" + originalParameter.Name.ToUpperInvariant() + ":PROGRAMMATIC:INT=x?}", StringComparison.Ordinal);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mutationCase));
+        }
+
+        var mutatedSegments = binding.Segments.ToArray();
+        mutatedSegments[1] = mutationCase == "duplicate-parameter-part"
+            ? new PersistedIdentityBinding.Segment([mutatedParameter, mutatedParameter])
+            : new PersistedIdentityBinding.Segment([mutatedParameter]);
+        PersistedIdentityBinding mutatedBinding = new(
+            binding.Method,
+            mutatedSegments,
+            mutatedIdentityRoute);
+        string mutatedToken = PersistedIdentityBinding.Prefix + EncodeBase64Url(mutatedBinding.Serialize());
+        string mutatedPayload = mutatedRoute + '\u001e' + mutatedToken;
+        return (mutatedRoute, "v1:" + EncodeBase64Url(Encoding.UTF8.GetBytes(mutatedPayload)));
+    }
+
     private static RouteEndpoint BuildEndpoint(RoutePattern pattern)
     {
         RouteEndpointBuilder builder = new(_ => Task.CompletedTask, pattern, order: 0);
@@ -338,6 +514,25 @@ public sealed class PersistedIdentityCanonicalityTests
                         defaultValue,
                         RoutePatternParameterKind.Standard,
                         [RoutePatternFactory.ParameterPolicy(policy)]),
+                ]),
+            ]);
+
+    private static RoutePattern ProgrammaticAstralPattern() =>
+        RoutePatternFactory.Pattern(
+            rawText: null!,
+            segments:
+            [
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.LiteralPart("😀"),
+                    RoutePatternFactory.SeparatorPart("."),
+                    RoutePatternFactory.LiteralPart("é"),
+                ]),
+                RoutePatternFactory.Segment([
+                    RoutePatternFactory.ParameterPart(
+                        "id",
+                        null,
+                        RoutePatternParameterKind.Optional,
+                        [RoutePatternFactory.ParameterPolicy(new IntRouteConstraint())]),
                 ]),
             ]);
 

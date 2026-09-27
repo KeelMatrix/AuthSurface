@@ -84,6 +84,205 @@ internal static class AuthSurfaceParameterPolicyRegistry
         CancellationToken cancellationToken = default)
         => "programmatic:" + RenderUnwrapped(policy, parameterName, budget, depth: 0, cancellationToken);
 
+    internal static IParameterPolicy Create(string content, string parameterName)
+    {
+        if (!content.StartsWith("programmatic:", StringComparison.Ordinal))
+        {
+            throw InvalidGeneratedPolicy(content, parameterName);
+        }
+
+        IParameterPolicy policy = CreateUnwrapped(content["programmatic:".Length..], parameterName, depth: 0);
+        string rendered = Render(policy, parameterName, new AuthSurfaceCanonicalizationBudget());
+        if (!string.Equals(rendered, content, StringComparison.Ordinal))
+        {
+            throw InvalidGeneratedPolicy(content, parameterName);
+        }
+
+        return policy;
+    }
+
+    private static IParameterPolicy CreateUnwrapped(string expression, string parameterName, int depth)
+    {
+        if (depth >= AuthSurfaceCanonicalizer.MaximumRoutePolicyDepth)
+        {
+            throw AuthSurfaceCanonicalizer.RoutePolicyTooDeep();
+        }
+
+        if (expression.Length == 0)
+        {
+            throw InvalidGeneratedPolicy(expression, parameterName);
+        }
+
+        int open = expression.IndexOf('(');
+        if (open < 0)
+        {
+            return expression switch
+            {
+                "alpha" => new AlphaRouteConstraint(),
+                "bool" => new BoolRouteConstraint(),
+                "datetime" => new DateTimeRouteConstraint(),
+                "decimal" => new DecimalRouteConstraint(),
+                "double" => new DoubleRouteConstraint(),
+                "file" => new FileNameRouteConstraint(),
+                "float" => new FloatRouteConstraint(),
+                "guid" => new GuidRouteConstraint(),
+                "int" => new IntRouteConstraint(),
+                "long" => new LongRouteConstraint(),
+                "nonfile" => new NonFileNameRouteConstraint(),
+                "required" => new RequiredRouteConstraint(),
+                _ => throw InvalidGeneratedPolicy(expression, parameterName),
+            };
+        }
+
+        if (open == 0 || !expression.EndsWith(')'))
+        {
+            throw InvalidGeneratedPolicy(expression, parameterName);
+        }
+
+        string token = expression[..open];
+        string arguments = expression[(open + 1)..^1];
+        if (token == "regex")
+        {
+            const string optionsSuffix = ";options=521";
+            if (!arguments.EndsWith(optionsSuffix, StringComparison.Ordinal))
+            {
+                throw InvalidGeneratedPolicy(expression, parameterName);
+            }
+
+            string pattern = arguments[..^optionsSuffix.Length];
+            try
+            {
+                return new RegexRouteConstraint(new Regex(pattern, FrameworkInlineRegexOptions));
+            }
+            catch (ArgumentException)
+            {
+                throw InvalidGeneratedPolicy(expression, parameterName);
+            }
+        }
+
+        string[] parts = SplitArguments(arguments, expression, parameterName);
+        return token switch
+        {
+            "composite" => new CompositeRouteConstraint(parts.Select(part => AsRouteConstraint(
+                CreateUnwrapped(part, parameterName, depth + 1),
+                expression,
+                parameterName)).ToArray()),
+            "optional" when parts.Length == 1 => new OptionalRouteConstraint(AsRouteConstraint(
+                CreateUnwrapped(parts[0], parameterName, depth + 1),
+                expression,
+                parameterName)),
+            "httpMethod" => new HttpMethodRouteConstraint(parts),
+            "length" when parts.Length == 2 => new LengthRouteConstraint(
+                ParseInt(parts[0], expression, parameterName),
+                ParseInt(parts[1], expression, parameterName)),
+            "minlength" when parts.Length == 1 => new MinLengthRouteConstraint(
+                ParseInt(parts[0], expression, parameterName)),
+            "maxlength" when parts.Length == 1 => new MaxLengthRouteConstraint(
+                ParseInt(parts[0], expression, parameterName)),
+            "min" when parts.Length == 1 => new MinRouteConstraint(
+                ParseInt(parts[0], expression, parameterName)),
+            "max" when parts.Length == 1 => new MaxRouteConstraint(
+                ParseInt(parts[0], expression, parameterName)),
+            "range" when parts.Length == 2 => new RangeRouteConstraint(
+                ParseInt(parts[0], expression, parameterName),
+                ParseInt(parts[1], expression, parameterName)),
+            _ => throw InvalidGeneratedPolicy(expression, parameterName),
+        };
+    }
+
+    private static IRouteConstraint AsRouteConstraint(
+        IParameterPolicy policy,
+        string expression,
+        string parameterName) => policy as IRouteConstraint
+            ?? throw InvalidGeneratedPolicy(expression, parameterName);
+
+    private static int ParseInt(string value, string expression, string parameterName) =>
+        int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int result)
+            ? result
+            : throw InvalidGeneratedPolicy(expression, parameterName);
+
+    private static string[] SplitArguments(string arguments, string expression, string parameterName)
+    {
+        if (arguments.Length == 0)
+        {
+            return [];
+        }
+
+        var parts = new List<string>();
+        int start = 0;
+        int depth = 0;
+        for (int index = 0; index < arguments.Length; index++)
+        {
+            if (arguments.AsSpan(index).StartsWith("regex("))
+            {
+                int regexEnd = FindRegexExpressionEnd(arguments, index, expression, parameterName);
+                index = regexEnd;
+                continue;
+            }
+
+            switch (arguments[index])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')':
+                    if (--depth < 0)
+                    {
+                        throw InvalidGeneratedPolicy(expression, parameterName);
+                    }
+
+                    break;
+                case ',' when depth == 0:
+                    parts.Add(arguments[start..index]);
+                    start = index + 1;
+                    break;
+            }
+        }
+
+        if (depth != 0)
+        {
+            throw InvalidGeneratedPolicy(expression, parameterName);
+        }
+
+        parts.Add(arguments[start..]);
+        return parts.Select(static part => part.Trim()).ToArray();
+    }
+
+    private static int FindRegexExpressionEnd(
+        string arguments,
+        int start,
+        string expression,
+        string parameterName)
+    {
+        const string suffix = ";options=521)";
+        int search = start + "regex(".Length;
+        while (search < arguments.Length)
+        {
+            int suffixStart = arguments.IndexOf(suffix, search, StringComparison.Ordinal);
+            if (suffixStart < 0)
+            {
+                break;
+            }
+
+            int end = suffixStart + suffix.Length;
+            if (end == arguments.Length || arguments[end] is ',' or ')')
+            {
+                return end - 1;
+            }
+
+            search = suffixStart + 1;
+        }
+
+        throw InvalidGeneratedPolicy(expression, parameterName);
+    }
+
+    private static AuthSurfaceAnalysisException InvalidGeneratedPolicy(
+        string content,
+        string parameterName) =>
+        new(
+            AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
+            $"Route parameter '{parameterName}' contains an invalid generated policy provenance value '{content}'.");
+
     private static string RenderUnwrapped(
         IParameterPolicy policy,
         string parameterName,

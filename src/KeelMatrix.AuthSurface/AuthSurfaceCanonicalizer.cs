@@ -320,19 +320,24 @@ internal static class AuthSurfaceCanonicalizer
                     .Replace("-", "+", StringComparison.Ordinal)
                     .Replace("_", "/", StringComparison.Ordinal) + new string('=', bindingPadding);
                 PersistedIdentityBinding binding = PersistedIdentityBinding.Deserialize(Convert.FromBase64String(paddedBinding));
-                binding = binding.CanonicalizeForWriter();
                 if (!string.Equals(binding.Method, method, StringComparison.Ordinal))
                 {
                     throw new FormatException("The persisted identity binding is not bound to the endpoint HTTP method.");
                 }
 
-                string renderedRoute = RenderPersistedIdentityBinding(binding, canonicalize: false);
+                RoutePattern reconstructedPattern = ReconstructPersistedIdentityBinding(binding);
+                PersistedIdentityBinding emittedBinding = CreatePersistedIdentityBinding(
+                    reconstructedPattern,
+                    binding.Method,
+                    new AuthSurfaceCanonicalizationBudget(),
+                    CancellationToken.None);
+                string renderedRoute = RenderPersistedIdentityBinding(emittedBinding, canonicalize: false);
                 if (!string.Equals(renderedRoute, route, StringComparison.Ordinal))
                 {
                     throw new FormatException("The persisted identity binding does not match the endpoint route.");
                 }
 
-                string renderedIdentityRoute = RenderPersistedIdentityBinding(binding, canonicalize: true);
+                string renderedIdentityRoute = RenderPersistedIdentityBinding(emittedBinding, canonicalize: true);
                 if (!string.Equals(binding.IdentityRoute, renderedIdentityRoute, StringComparison.Ordinal))
                 {
                     throw new FormatException("The persisted identity binding does not match its canonical route representation.");
@@ -340,9 +345,15 @@ internal static class AuthSurfaceCanonicalizer
 
                 string identity = renderedIdentityRoute + IdentityMethodSeparator + method.ToUpperInvariant();
                 ValidateIdentityKey(identity, method);
+                emittedBinding = emittedBinding.WithIdentityRoute(renderedIdentityRoute);
+                if (!emittedBinding.Serialize().AsSpan().SequenceEqual(binding.Serialize()))
+                {
+                    throw new FormatException("The persisted identity binding is not the exact output of the route-pattern writer.");
+                }
+
                 string canonicalPersistedIdentity = EncodePersistedIdentity(
                     route,
-                    EncodePersistedIdentityBinding(binding.WithIdentityRoute(renderedIdentityRoute)));
+                    EncodePersistedIdentityBinding(emittedBinding));
                 if (!string.Equals(canonicalPersistedIdentity, persistedIdentity, StringComparison.Ordinal))
                 {
                     throw new FormatException("The persisted identity binding is not the canonical writer encoding.");
@@ -561,6 +572,74 @@ internal static class AuthSurfaceCanonicalizer
         }
 
         return new PersistedIdentityBinding(method, segments);
+    }
+
+    private static RoutePattern ReconstructPersistedIdentityBinding(PersistedIdentityBinding binding)
+    {
+        var segments = new List<RoutePatternPathSegment>(binding.Segments.Count);
+        bool requiresRouteParsing = false;
+        foreach (PersistedIdentityBinding.Segment segment in binding.Segments)
+        {
+            var parts = new List<RoutePatternPart>(segment.Parts.Count);
+            foreach (PersistedIdentityBinding.Part part in segment.Parts)
+            {
+                switch (part)
+                {
+                    case PersistedIdentityBinding.LiteralPart literal:
+                        parts.Add(RoutePatternFactory.LiteralPart(literal.Content));
+                        break;
+                    case PersistedIdentityBinding.SeparatorPart separator:
+                        parts.Add(RoutePatternFactory.SeparatorPart(separator.Content));
+                        break;
+                    case PersistedIdentityBinding.ParameterPart parameter:
+                        if (parameter.IsCatchAll && parameter.IsOptional)
+                        {
+                            throw new FormatException("The persisted identity binding combines catch-all and optional parameter flags.");
+                        }
+
+                        if (parameter.IsCatchAll && !parameter.EncodeSlashes)
+                        {
+                            // RoutePatternFactory exposes the encoded-slash catch-all form as
+                            // a construction primitive, while the non-encoded form is only
+                            // available through its parser. Parse the writer-rendered route,
+                            // then require the complete writer binding to match below.
+                            requiresRouteParsing = true;
+                        }
+
+                        var policies = new List<RoutePatternParameterPolicyReference>(parameter.Policies.Count);
+                        foreach (PersistedIdentityBinding.Policy policy in parameter.Policies)
+                        {
+                            policies.Add(policy.IsContent
+                                ? RoutePatternFactory.ParameterPolicy(policy.Content)
+                                : RoutePatternFactory.ParameterPolicy(
+                                    AuthSurfaceParameterPolicyRegistry.Create(policy.Content, parameter.Name)));
+                        }
+
+                        RoutePatternParameterKind kind = parameter.IsCatchAll
+                            ? RoutePatternParameterKind.CatchAll
+                            : parameter.IsOptional
+                                ? RoutePatternParameterKind.Optional
+                                : RoutePatternParameterKind.Standard;
+                        parts.Add(RoutePatternFactory.ParameterPart(
+                            parameter.Name,
+                            parameter.Default,
+                            kind,
+                            policies));
+                        break;
+                    default:
+                        throw new FormatException("The persisted identity binding contains an unknown route part.");
+                }
+            }
+
+            segments.Add(RoutePatternFactory.Segment(parts));
+        }
+
+        if (requiresRouteParsing)
+        {
+            return RoutePatternFactory.Parse(RenderPersistedIdentityBinding(binding, canonicalize: false));
+        }
+
+        return RoutePatternFactory.Pattern(rawText: null!, segments);
     }
 
     private static string RenderPersistedIdentityBinding(
