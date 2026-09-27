@@ -37,7 +37,7 @@ public sealed class AuthSurfaceScanner
 
     /// <summary>Scans runtime route endpoints once and returns a deterministic report.</summary>
     /// <param name="options">Optional inclusion and strictness options.</param>
-    /// <param name="cancellationToken">Token used to cancel scanner-owned endpoint enumeration, route canonicalization, and policy resolution.</param>
+    /// <param name="cancellationToken">Token used to cancel scanner-owned endpoint enumeration, route canonicalization, policy resolution, and checks between requirement-data callback yields; arbitrary callback code is not interruptible.</param>
     /// <returns>The completed scan report.</returns>
     public async Task<AuthSurfaceReport> ScanAsync(
         AuthSurfaceScanOptions? options = null,
@@ -194,7 +194,16 @@ public sealed class AuthSurfaceScanner
             foreach (IAuthorizationRequirementData metadata in requirementData)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                foreach (IAuthorizationRequirement requirement in metadata.GetRequirements())
+                IEnumerable<IAuthorizationRequirement> requirementSequence = metadata.GetRequirements();
+                if (requirementSequence.TryGetNonEnumeratedCount(out int requirementCount) &&
+                    requirementCount > AuthSurfaceCanonicalizer.MaximumMetadataItems - requirementDataRequirements.Count)
+                {
+                    throw new AuthSurfaceAnalysisException(
+                        AuthSurfaceDiagnosticCode.MetadataLimit,
+                        $"Endpoint '{route}' exceeds the supported authorization requirement-data bound of {AuthSurfaceCanonicalizer.MaximumMetadataItems:N0} requirements.");
+                }
+
+                foreach (IAuthorizationRequirement requirement in requirementSequence)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (requirementDataRequirements.Count >= AuthSurfaceCanonicalizer.MaximumMetadataItems)
@@ -204,11 +213,10 @@ public sealed class AuthSurfaceScanner
                             $"Endpoint '{route}' exceeds the supported authorization requirement-data bound of {AuthSurfaceCanonicalizer.MaximumMetadataItems:N0} requirements.");
                     }
 
+                    scanBudget.ConsumeRequirementDataRequirements(1);
                     requirementDataRequirements.Add(requirement);
                 }
             }
-
-            scanBudget.ConsumeRequirementDataRequirements(requirementDataRequirements.Count);
 
             if (requirementData.Count > 0)
             {

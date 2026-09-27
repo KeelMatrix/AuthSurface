@@ -127,6 +127,85 @@ public sealed class PerformanceTests
     }
 
     [Fact]
+    public async Task RequirementDataExpansionRejectsAtScanBoundaryBeforeMaterializingOverflow()
+    {
+        var data = new CountingRequirementData(AuthSurfaceCanonicalizer.MaximumScanRequirementDataRequirements + 1);
+        RouteEndpoint endpoint = BuildEndpointWithRequirementData("/requirement-data-boundary", data);
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([endpoint])],
+                new NullPolicyProvider()).ScanAsync());
+
+        Assert.Equal("resource-limit", exception.Code);
+        Assert.Equal(AuthSurfaceCanonicalizer.MaximumScanRequirementDataRequirements, data.MaterializedCount);
+    }
+
+    [Fact]
+    public async Task RequirementDataExactlyAtScanBoundaryIsAccepted()
+    {
+        var data = new CountingRequirementData(AuthSurfaceCanonicalizer.MaximumScanRequirementDataRequirements);
+        RouteEndpoint endpoint = BuildEndpointWithRequirementData("/requirement-data-exact-boundary", data);
+
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([endpoint])],
+            new NullPolicyProvider()).ScanAsync();
+
+        Assert.Equal(AuthSurfaceCanonicalizer.MaximumScanRequirementDataRequirements, data.MaterializedCount);
+        Assert.Equal(AuthSurfaceCanonicalizer.MaximumScanRequirementDataRequirements, Assert.Single(report.Endpoints).Requirements.Count);
+    }
+
+    [Fact]
+    public async Task RequirementDataExpansionAcrossMetadataObjectsStopsAtAggregateBoundary()
+    {
+        var first = new CountingRequirementData(4_096);
+        var second = new CountingRequirementData(4_097);
+        RouteEndpoint endpoint = BuildEndpointWithRequirementData("/requirement-data/metadata", first, second);
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([endpoint])],
+                new NullPolicyProvider()).ScanAsync());
+
+        Assert.Equal("resource-limit", exception.Code);
+        Assert.Equal(4_096, first.MaterializedCount);
+        Assert.Equal(4_096, second.MaterializedCount);
+    }
+
+    [Fact]
+    public async Task RequirementDataExpansionAcrossEndpointsStopsAtAggregateBoundary()
+    {
+        var first = new CountingRequirementData(4_096);
+        var second = new CountingRequirementData(4_097);
+        RouteEndpoint firstEndpoint = BuildEndpointWithRequirementData("/requirement-data/first", first);
+        RouteEndpoint secondEndpoint = BuildEndpointWithRequirementData("/requirement-data/second", second);
+
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([firstEndpoint, secondEndpoint])],
+                new NullPolicyProvider()).ScanAsync());
+
+        Assert.Equal("resource-limit", exception.Code);
+        Assert.Equal(4_096, first.MaterializedCount);
+        Assert.Equal(4_096, second.MaterializedCount);
+    }
+
+    [Fact]
+    public async Task RequirementDataCancellationIsObservedBetweenYields()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var data = new CancellingRequirementData(cancellation, cancelAfter: 100);
+        RouteEndpoint endpoint = BuildEndpointWithRequirementData("/requirement-data/cancel", data);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            async () => await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([endpoint])],
+                new NullPolicyProvider()).ScanAsync(cancellationToken: cancellation.Token));
+
+        Assert.Equal(100, data.MaterializedCount);
+    }
+
+    [Fact]
     public void ASingleRouteStillHonorsThePerRoutePolicyExpressionLimit()
     {
         string policy = "regex(" + new string('a', AuthSurfaceCanonicalizer.MaximumRoutePolicyLength) + ")";
@@ -208,6 +287,22 @@ public sealed class PerformanceTests
         return (RouteEndpoint)builder.Build();
     }
 
+    private static RouteEndpoint BuildEndpointWithRequirementData(
+        string route,
+        params IAuthorizationRequirementData[] data)
+    {
+        var builder = new RouteEndpointBuilder(
+            _ => Task.CompletedTask,
+            RoutePatternFactory.Parse(route),
+            order: 0);
+        builder.Metadata.Add(new HttpMethodMetadata(["GET"]));
+        foreach (IAuthorizationRequirementData item in data)
+        {
+            builder.Metadata.Add(item);
+        }
+        return (RouteEndpoint)builder.Build();
+    }
+
     private static RouteEndpoint BuildProgrammaticAnonymousEndpoint(
         int index,
         IParameterPolicy parameterPolicy)
@@ -268,6 +363,40 @@ public sealed class PerformanceTests
             for (int index = 0; index < count; index++)
             {
                 yield return new MarkerRequirement();
+            }
+        }
+    }
+
+    private sealed class CountingRequirementData(int count) : IAuthorizationRequirementData
+    {
+        public int MaterializedCount { get; private set; }
+
+        public IEnumerable<IAuthorizationRequirement> GetRequirements()
+        {
+            for (int index = 0; index < count; index++)
+            {
+                yield return new MarkerRequirement();
+                MaterializedCount++;
+            }
+        }
+    }
+
+    private sealed class CancellingRequirementData(
+        CancellationTokenSource cancellation,
+        int cancelAfter) : IAuthorizationRequirementData
+    {
+        public int MaterializedCount { get; private set; }
+
+        public IEnumerable<IAuthorizationRequirement> GetRequirements()
+        {
+            for (int index = 0; ; index++)
+            {
+                yield return new MarkerRequirement();
+                MaterializedCount++;
+                if (MaterializedCount == cancelAfter)
+                {
+                    cancellation.Cancel();
+                }
             }
         }
     }

@@ -375,7 +375,12 @@ internal static class AuthSurfaceCanonicalizer
         {
             // Some accepted programmatic RoutePattern values, such as a default containing
             // a question mark, cannot be reconstructed from their readable route text. The
-            // persisted token remains the structural representation for those bounded cases.
+            // persisted token remains the structural representation for those bounded cases,
+            // but it is still bound to every identity-significant part of the display.
+            if (!IdentityRouteMatchesDisplay(route, identity))
+            {
+                throw new FormatException("The persisted identity does not match the endpoint route and HTTP method.");
+            }
         }
     }
 
@@ -387,8 +392,95 @@ internal static class AuthSurfaceCanonicalizer
             return false;
         }
 
-        string structuralRoute = identity[..separator].Replace(TextualPolicyPrefix, string.Empty, StringComparison.Ordinal);
-        return string.Equals(structuralRoute, route, StringComparison.OrdinalIgnoreCase);
+        string structuralRoute = RemoveTextualPolicyMarkers(identity[..separator]);
+        return string.Equals(
+            NormalizeUnparseableDisplayRoute(structuralRoute),
+            NormalizeUnparseableDisplayRoute(route),
+            StringComparison.Ordinal);
+    }
+
+    private static string RemoveTextualPolicyMarkers(string route)
+    {
+        var builder = new StringBuilder(route.Length);
+        int parameterDepth = 0;
+        int policyDepth = 0;
+        for (int index = 0; index < route.Length; index++)
+        {
+            char character = route[index];
+            if (character == '{' && (index + 1 >= route.Length || route[index + 1] != '{'))
+            {
+                parameterDepth++;
+                policyDepth = 0;
+            }
+            else if (character == '}' && (index == 0 || route[index - 1] != '}') && parameterDepth > 0)
+            {
+                parameterDepth--;
+                policyDepth = 0;
+            }
+
+            if (parameterDepth > 0)
+            {
+                if (character == '(')
+                {
+                    policyDepth++;
+                }
+                else if (character == ')' && policyDepth > 0)
+                {
+                    policyDepth--;
+                }
+            }
+
+            if (parameterDepth > 0 && policyDepth == 0 &&
+                character == ':' && route.AsSpan(index + 1).StartsWith("text:", StringComparison.Ordinal))
+            {
+                builder.Append(':');
+                index += TextualPolicyPrefix.Length;
+                continue;
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string NormalizeUnparseableDisplayRoute(string route)
+    {
+        var builder = new StringBuilder(route.Length);
+        bool inParameter = false;
+        bool inParameterName = false;
+        for (int index = 0; index < route.Length; index++)
+        {
+            char character = route[index];
+            if (!inParameter && character == '{' && (index + 1 >= route.Length || route[index + 1] != '{'))
+            {
+                inParameter = true;
+                inParameterName = true;
+                builder.Append(character);
+                continue;
+            }
+
+            if (inParameter && character == '}' && (index == 0 || route[index - 1] != '}'))
+            {
+                inParameter = false;
+                inParameterName = false;
+                builder.Append(character);
+                continue;
+            }
+
+            if (inParameterName && character is ':' or '=' or '?')
+            {
+                inParameterName = false;
+            }
+
+            builder.Append(inParameter && inParameterName
+                ? char.ToUpperInvariant(character)
+                : !inParameter
+                    ? char.ToUpperInvariant(character)
+                    : character);
+        }
+
+        return builder.ToString();
     }
 
     internal static string Fingerprint(IEnumerable<string> requirements, CancellationToken cancellationToken = default)
