@@ -64,6 +64,9 @@ public sealed class DocumentationContractTests
         Assert.Contains("ambiguous legacy tokens fail closed", documentation, StringComparison.Ordinal);
         Assert.Contains("b1:<base64url-no-padding(binding)>", documentation, StringComparison.Ordinal);
         Assert.Contains("fixed ASCII magic `ASIB`", documentation, StringComparison.Ordinal);
+        Assert.Contains("deliberate narrower boundary", documentation, StringComparison.Ordinal);
+        Assert.Contains("non-encoded catch-all combined with any generated/content-less policy", documentation, StringComparison.Ordinal);
+        Assert.Contains("before creating a directory or file", documentation, StringComparison.Ordinal);
         Assert.DoesNotContain("FindUnparseablePolicyBoundaries", documentation, StringComparison.Ordinal);
         Assert.DoesNotContain("at each route character", documentation, StringComparison.Ordinal);
 

@@ -23,6 +23,11 @@ public sealed class PersistedIdentityCanonicalityTests
             RoutePatternFactory.Parse("/items/{id?}"),
             RoutePatternFactory.Parse("/files/{*path}"),
             RoutePatternFactory.Parse("/files/{**path}"),
+            RoutePatternFactory.Parse("/files/{**path:int}"),
+            RoutePatternFactory.Parse(
+                "/files/{*path}",
+                defaults: null,
+                parameterPolicies: new { path = new IntRouteConstraint() }),
             RoutePatternFactory.Parse("/v1/pre-{id}.json"),
             RoutePatternFactory.Parse("/items/{id:regex(^\\d+$)}"),
             RoutePatternFactory.Parse("/items/{id:composite(int,min(2))}"),
@@ -53,6 +58,40 @@ public sealed class PersistedIdentityCanonicalityTests
             Assert.Equal(endpoint.Identity, Assert.Single(roundTrip.Endpoints).Identity);
             Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid, endpoint.Route);
         }
+    }
+
+    [Theory]
+    [InlineData("int")]
+    [InlineData("composite")]
+    [InlineData("optional")]
+    [InlineData("regex")]
+    [InlineData("http-method")]
+    public async Task BaselineCreationRejectsNonEncodedCatchAllGeneratedPoliciesWithoutWritingFile(string policyKind)
+    {
+        RoutePattern pattern = NonEncodedCatchAllWithGeneratedPolicy(CreateGeneratedPolicy(policyKind));
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+            new AllowingPolicyProvider()).ScanAsync();
+        AuthSurfaceEndpoint scannedEndpoint = Assert.Single(report.Endpoints);
+        Assert.NotNull(scannedEndpoint.PersistedIdentity);
+        Assert.Throws<AuthSurfaceBaselineException>(() =>
+            AuthSurfaceCanonicalizer.ReadPersistedIdentity(
+                scannedEndpoint.PersistedIdentity!,
+                scannedEndpoint.Route,
+                scannedEndpoint.Method));
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "unsupported", "authsurface.json");
+
+        AuthSurfaceAnalysisException exception = Assert.Throws<AuthSurfaceAnalysisException>(
+            () => AuthSurfaceBaseline.Create(report, path, overwrite: false));
+
+        Assert.Equal("unsupported-parameter-policy", exception.Code);
+        Assert.Contains("/files/{**path:programmatic:", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("[GET]", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("non-encoded catch-all", exception.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(path));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(path)!));
     }
 
     [Theory]
@@ -550,6 +589,26 @@ public sealed class PersistedIdentityCanonicalityTests
                         [RoutePatternFactory.ParameterPolicy(new IntRouteConstraint())]),
                 ]),
             ]);
+
+    private static RoutePattern NonEncodedCatchAllWithGeneratedPolicy(IParameterPolicy policy) =>
+        RoutePatternFactory.Parse(
+            "/files/{**path}",
+            defaults: null,
+            parameterPolicies: new { path = policy });
+
+    private static IParameterPolicy CreateGeneratedPolicy(string policyKind) => policyKind switch
+    {
+        "int" => new IntRouteConstraint(),
+        "composite" => new CompositeRouteConstraint([new IntRouteConstraint(), new MinRouteConstraint(2)]),
+        "optional" => new OptionalRouteConstraint(new IntRouteConstraint()),
+        "regex" => new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+            "^\\d+$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+            System.Text.RegularExpressions.RegexOptions.Compiled)),
+        "http-method" => new HttpMethodRouteConstraint(["post", "GET"]),
+        _ => throw new ArgumentOutOfRangeException(nameof(policyKind), policyKind, null),
+    };
 
     private sealed class AllowingPolicyProvider : IAuthorizationPolicyProvider
     {

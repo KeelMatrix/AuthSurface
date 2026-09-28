@@ -29,11 +29,21 @@ public sealed class AuthSurfaceBaseline
 
     /// <summary>Creates a baseline from a policy-compliant report without writing it.</summary>
     /// <param name="report">The completed runtime scan report.</param>
+    /// <remarks>Creation fails with <c>unsupported-parameter-policy</c> when a route uses a non-encoded catch-all with generated, content-less policy provenance that the reader cannot reconstruct losslessly.</remarks>
     /// <returns>The in-memory baseline.</returns>
     public static AuthSurfaceBaseline Create(AuthSurfaceReport report)
     {
         ArgumentNullException.ThrowIfNull(report);
         report.AssertPolicyCompliant();
+        foreach (AuthSurfaceEndpoint endpoint in report.Endpoints)
+        {
+            string? persistedIdentity = GetPersistedIdentity(endpoint);
+            AuthSurfaceCanonicalizer.ValidateWriterReadableIdentity(
+                endpoint.Route,
+                endpoint.Method,
+                persistedIdentity);
+        }
+
         return new AuthSurfaceBaseline(report.Endpoints);
     }
 
@@ -250,6 +260,7 @@ public sealed class AuthSurfaceBaseline
     /// <param name="report">The completed runtime scan report.</param>
     /// <param name="path">The local destination path.</param>
     /// <param name="overwrite">Whether an existing file may be replaced.</param>
+    /// <remarks>Creation validates that each persisted identity is readable before any destination directory or file is created.</remarks>
     /// <returns>The baseline that was written.</returns>
     public static AuthSurfaceBaseline Create(AuthSurfaceReport report, string path, bool overwrite)
     {

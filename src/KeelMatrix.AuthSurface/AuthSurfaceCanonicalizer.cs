@@ -386,6 +386,28 @@ internal static class AuthSurfaceCanonicalizer
         }
     }
 
+    internal static void ValidateWriterReadableIdentity(string route, string method, string? persistedIdentity)
+    {
+        if (persistedIdentity is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = ReadPersistedIdentity(persistedIdentity, route, method);
+        }
+        catch (AuthSurfaceBaselineException)
+        {
+            string shape = TryGetNonEncodedCatchAllGeneratedPolicy(persistedIdentity, out string? policy)
+                ? $"a non-encoded catch-all with generated/content-less policy '{policy}'"
+                : "a persisted route identity that the baseline reader cannot reconstruct losslessly";
+            throw new AuthSurfaceAnalysisException(
+                AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
+                $"Cannot create a baseline for endpoint '{route}' [{method}]: {shape} is not supported by the persisted identity contract. Use an encoded catch-all, a textual/content-bearing policy, or explicitly exclude the endpoint.");
+        }
+    }
+
     internal static void ValidateRouteShape(string route, string description)
     {
         if (string.IsNullOrWhiteSpace(route) || route.Length > MaximumRoutePatternLength || route[0] != '/')
@@ -486,6 +508,62 @@ internal static class AuthSurfaceCanonicalizer
         }
 
         return result;
+    }
+
+    private static bool TryGetNonEncodedCatchAllGeneratedPolicy(string persistedIdentity, out string? policy)
+    {
+        policy = null;
+        try
+        {
+            string encoded = persistedIdentity[PersistedIdentityPrefix.Length..];
+            int padding = (4 - encoded.Length % 4) % 4;
+            string padded = encoded.Replace("-", "+", StringComparison.Ordinal).Replace("_", "/", StringComparison.Ordinal) + new string('=', padding);
+            string payload = Encoding.UTF8.GetString(Convert.FromBase64String(padded));
+            int separator = payload.IndexOf(PersistedIdentitySeparator);
+            if (separator < 0)
+            {
+                return false;
+            }
+
+            string identityToken = payload[(separator + 1)..];
+            if (!identityToken.StartsWith(PersistedIdentityBinding.Prefix, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string encodedBinding = identityToken[PersistedIdentityBinding.Prefix.Length..];
+            int bindingPadding = (4 - encodedBinding.Length % 4) % 4;
+            string paddedBinding = encodedBinding
+                .Replace("-", "+", StringComparison.Ordinal)
+                .Replace("_", "/", StringComparison.Ordinal) + new string('=', bindingPadding);
+            PersistedIdentityBinding binding = PersistedIdentityBinding.Deserialize(Convert.FromBase64String(paddedBinding));
+            foreach (PersistedIdentityBinding.Segment segment in binding.Segments)
+            {
+                foreach (PersistedIdentityBinding.Part part in segment.Parts)
+                {
+                    if (part is PersistedIdentityBinding.ParameterPart
+                        {
+                            IsCatchAll: true,
+                            EncodeSlashes: false,
+                            Policies: var policies,
+                        })
+                    {
+                        PersistedIdentityBinding.Policy? generated = policies.FirstOrDefault(static item => !item.IsContent);
+                        if (generated is not null)
+                        {
+                            policy = generated.Content;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception exception) when (exception is ArgumentException or DecoderFallbackException or EndOfStreamException or FormatException or IOException or OverflowException)
+        {
+            _ = exception;
+        }
+
+        return false;
     }
 
     private static string EncodePersistedIdentityBinding(PersistedIdentityBinding binding)
