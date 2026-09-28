@@ -42,6 +42,14 @@ jobs:
         timeout-minutes: 10
         run: pwsh -NoProfile -File ./scripts/validate-release-workflow.ps1
 
+      - name: Verify hidden child PowerShell launches
+        shell: pwsh
+        run: pwsh -NoProfile -File ./build/Test-NestedPwshLaunch.ps1 -SelfTest
+
+      - name: Verify repository child PowerShell launches
+        shell: pwsh
+        run: pwsh -NoProfile -File ./build/Test-NestedPwshLaunch.ps1
+
       - name: Run complete repository validation
         shell: pwsh
         timeout-minutes: 35

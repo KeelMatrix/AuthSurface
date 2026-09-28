@@ -11,6 +11,11 @@ $env:DO_NOT_TRACK = '1'
 
 $root = Split-Path -Parent $PSScriptRoot
 $solution = Join-Path $root 'KeelMatrix.AuthSurface.sln'
+$launchGuard = Join-Path $root 'build/Test-NestedPwshLaunch.ps1'
+$launchGuardSelfTest = & $launchGuard -SelfTest
+if ($LASTEXITCODE -ne 0) { throw 'Nested PowerShell launch guard self-test failed.' }
+& $launchGuard
+if ($LASTEXITCODE -ne 0) { throw 'Nested PowerShell launch guard failed.' }
 $library = Join-Path $root 'src/KeelMatrix.AuthSurface/KeelMatrix.AuthSurface.csproj'
 $packageDirectory = Join-Path $root 'artifacts/package'
 $version = '0.1.0'
