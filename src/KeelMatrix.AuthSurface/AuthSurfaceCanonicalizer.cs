@@ -1129,6 +1129,8 @@ internal static class AuthSurfaceCanonicalizer
                 return "httpMethod(" + string.Join(',', parts.Where(static part => !string.IsNullOrWhiteSpace(part)).Select(static part => part.Trim().ToUpperInvariant()).Distinct(StringComparer.Ordinal).OrderBy(static part => part, StringComparer.Ordinal)) + ")";
             case "regex":
                 return "regex(" + arguments.Trim() + ")";
+            case "regex64":
+                return "regex64(" + arguments.Trim() + ")";
             case "composite":
                 return "composite(" + string.Join(',', parts.Select(part => CanonicalizeProgrammaticPolicyContent(part, budget, depth + 1, cancellationToken)).OrderBy(static part => part, StringComparer.Ordinal)) + ")";
             case "optional" when parts.Length == 1:
@@ -1163,6 +1165,7 @@ internal static class AuthSurfaceCanonicalizer
             "composite" => "composite",
             "optional" => "optional",
             "regex" => "regex",
+            "regex64" => "regex64",
             _ => token.Trim().ToLowerInvariant(),
         };
 
@@ -1178,7 +1181,7 @@ internal static class AuthSurfaceCanonicalizer
         }
 
         budget.Visit(arguments.Length);
-        if (token == "regex")
+        if (token is "regex" or "regex64")
         {
             return [arguments.Trim()];
         }

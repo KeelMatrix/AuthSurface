@@ -53,6 +53,8 @@ Endpoint identity follows the bounded canonical-representation contract in [`doc
 
 Baseline creation rejects a non-encoded catch-all combined with any generated/content-less parameter policy before creating a directory or file. It throws `unsupported-parameter-policy` with the route and HTTP method, and directs callers to use an encoded catch-all, a textual/content-bearing policy, or an explicit exclusion. Plain and textual/content-bearing non-encoded catch-alls remain supported; the reader still rejects forged or non-writer-emittable tokens as `baseline-malformed` without changing input bytes.
 
+Schema version 1 endpoint records require explicit `usesDefaultPolicy` and `usesFallbackPolicy` JSON booleans; missing, `null`, or wrong-type required fields fail closed rather than acquiring CLR defaults. The writer and default reader share a 1,048,576-byte UTF-8 document bound, and `Write` validates the serialized document before creating a destination directory or file. Programmatic regex policies use `regex64(<base64url-no-padding(UTF-8 pattern)>;options=521)`, so user-controlled regex text cannot be mistaken for nested-policy delimiters; malformed encodings fail closed without rewriting the baseline.
+
 ## Diagnostic codes
 
 The following table is the complete stable code set emitted by the shipping assembly through structured violations and analysis or baseline exceptions. Message text may add context; automation should use the code.

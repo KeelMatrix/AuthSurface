@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using AuthSurface.FixtureApp;
 using KeelMatrix.AuthSurface;
@@ -41,6 +42,28 @@ public sealed class BaselineSchemaContractTests
             Endpoint("/public", "POST", AuthSurfaceAuthorizationKind.ExplicitAnonymous, [], [], [], false, false, []),
         ];
         Assert.True(AuthSurfaceVerifier.Compare(new AuthSurfaceReport(equivalentEndpoints, []), baseline).IsValid);
+    }
+
+    [Fact]
+    public void DefaultWriterOutputIsReadableAndComparableThroughThePathOverload()
+    {
+        AuthSurfaceEndpoint endpoint = Endpoint(
+            "/round-trip",
+            "GET",
+            AuthSurfaceAuthorizationKind.ExplicitProtected,
+            [],
+            [],
+            [],
+            usesDefaultPolicy: false,
+            usesFallbackPolicy: false,
+            ["requirement"]);
+        AuthSurfaceReport report = new([endpoint], []);
+
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+
+        Assert.True(AuthSurfaceVerifier.Compare(report, path).IsValid);
     }
 
     [Fact]
@@ -116,6 +139,79 @@ public sealed class BaselineSchemaContractTests
         AssertRejected(
             "{\"schemaVersion\":1,\"endpoints\":[{\"route\":42}]}",
             "baseline-field-type");
+    }
+
+    [Theory]
+    [InlineData("route")]
+    [InlineData("methods")]
+    [InlineData("authorization")]
+    [InlineData("policies")]
+    [InlineData("roles")]
+    [InlineData("schemes")]
+    [InlineData("usesDefaultPolicy")]
+    [InlineData("usesFallbackPolicy")]
+    [InlineData("requirements")]
+    [InlineData("requirementFingerprint")]
+    [InlineData("usesDefaultPolicy,usesFallbackPolicy")]
+    public void EveryRequiredEndpointFieldMustBePresent(string fields)
+    {
+        string json = CreateBaselineJson();
+        foreach (string field in fields.Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            json = OmitEndpointField(json, field);
+        }
+
+        AssertRejected(json, "baseline-field-type");
+    }
+
+    public static IEnumerable<object[]> RequiredEndpointFields() =>
+    [
+        ["route"],
+        ["methods"],
+        ["authorization"],
+        ["policies"],
+        ["roles"],
+        ["schemes"],
+        ["usesDefaultPolicy"],
+        ["usesFallbackPolicy"],
+        ["requirements"],
+        ["requirementFingerprint"],
+    ];
+
+    [Theory]
+    [MemberData(nameof(RequiredEndpointFields))]
+    public void RequiredEndpointFieldsRejectNullAndWrongJsonType(string field)
+    {
+        string json = CreateBaselineJson();
+        AssertRejected(ReplaceEndpointFieldValue(json, field, "null"), "baseline-field-type");
+
+        string wrongType = field is "methods" or "policies" or "roles" or "schemes" or "requirements"
+            ? "\"wrong\""
+            : field is "usesDefaultPolicy" or "usesFallbackPolicy"
+                ? "\"wrong\""
+                : "42";
+        AssertRejected(ReplaceEndpointFieldValue(json, field, wrongType), "baseline-field-type");
+    }
+
+    [Theory]
+    [MemberData(nameof(RequiredEndpointFields))]
+    public void RequiredEndpointFieldsRejectDuplicateProperties(string field)
+    {
+        AssertRejected(DuplicateEndpointField(CreateBaselineJson(), field), "baseline-duplicate-field");
+    }
+
+    [Fact]
+    public void WriterPersistsExplicitFalsePolicyFlags()
+    {
+        AuthSurfaceReport report = new([EndpointWithRequirement("explicit-false")], []);
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        string json = File.ReadAllText(path);
+
+        Assert.Contains("\"usesDefaultPolicy\": false", json, StringComparison.Ordinal);
+        Assert.Contains("\"usesFallbackPolicy\": false", json, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -326,6 +422,66 @@ public sealed class BaselineSchemaContractTests
     }
 
     [Fact]
+    public void WriterRejectsOversizedSerializedBaselineBeforeCreatingDestination()
+    {
+        AuthSurfaceEndpoint[] endpoints = Enumerable.Range(0, 5_000)
+            .Select(index => Endpoint(
+                "/items/" + index.ToString(CultureInfo.InvariantCulture),
+                "GET",
+                AuthSurfaceAuthorizationKind.ExplicitProtected,
+                [],
+                [],
+                [],
+                usesDefaultPolicy: false,
+                usesFallbackPolicy: false,
+                [new string('x', 512)]))
+            .ToArray();
+        AuthSurfaceReport report = new(endpoints, []);
+
+        using TemporaryDirectory directory = new();
+        string path = Path.Combine(directory.Path, "nested", "authsurface.json");
+
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Create(report, path, overwrite: false));
+
+        Assert.Equal("baseline-too-large", exception.Code);
+        Assert.False(File.Exists(path));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(path)));
+    }
+
+    [Fact]
+    public void WriterAndReaderShareTheExactByteBoundaryIncludingUnicodeContent()
+    {
+        const string unicodeSuffix = "é😀/{,}";
+        AuthSurfaceBaseline seed = AuthSurfaceBaseline.Create(
+            new AuthSurfaceReport([EndpointWithRequirement(unicodeSuffix)], []));
+        int fillerLength = AuthSurfaceBaseline.MaximumDocumentBytes - seed.Serialize().Length;
+        Assert.True(fillerLength > 0);
+
+        AuthSurfaceReport exactReport = new([EndpointWithRequirement(new string('x', fillerLength) + unicodeSuffix)], []);
+        AuthSurfaceBaseline exact = AuthSurfaceBaseline.Create(exactReport);
+        Assert.Equal(AuthSurfaceBaseline.MaximumDocumentBytes, exact.Serialize().Length);
+
+        using TemporaryDirectory directory = new();
+        string belowPath = Path.Combine(directory.Path, "below", "authsurface.json");
+        seed.Write(belowPath, overwrite: false);
+        Assert.True(AuthSurfaceVerifier.Compare(new AuthSurfaceReport([EndpointWithRequirement(unicodeSuffix)], []), belowPath).IsValid);
+
+        string exactPath = Path.Combine(directory.Path, "exact", "authsurface.json");
+        exact.Write(exactPath, overwrite: false);
+        Assert.True(AuthSurfaceVerifier.Compare(exactReport, exactPath).IsValid);
+
+        AuthSurfaceReport oversizedReport = new([EndpointWithRequirement(new string('x', fillerLength + 1) + unicodeSuffix)], []);
+        string oversizedPath = Path.Combine(directory.Path, "oversized", "authsurface.json");
+        AuthSurfaceBaselineException exception = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Create(oversizedReport, oversizedPath, overwrite: false));
+
+        Assert.Equal("baseline-too-large", exception.Code);
+        Assert.False(File.Exists(oversizedPath));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(oversizedPath)));
+    }
+
+    [Fact]
     public void RequirementFingerprintMustMatchOrderedRequirements()
     {
         AssertRejected(
@@ -480,8 +636,40 @@ public sealed class BaselineSchemaContractTests
         "\"route\":\"" + route + "\",\"methods\":[\"GET\"]," +
         "\"authorization\":\"ExplicitProtected\",\"policies\":[],\"roles\":[]," +
         "\"schemes\":[],\"usesDefaultPolicy\":false,\"usesFallbackPolicy\":false," +
-        "\"requirements\":[\"" + requirement + "\"],\"requirementFingerprint\":\"" +
-        AuthSurfaceCanonicalizer.Fingerprint([fingerprintRequirement ?? requirement]) + "\"}]}";
+            "\"requirements\":[\"" + requirement + "\"],\"requirementFingerprint\":\"" +
+            AuthSurfaceCanonicalizer.Fingerprint([fingerprintRequirement ?? requirement]) + "\"}]}";
+
+    private static string OmitEndpointField(string json, string field) => field switch
+    {
+        "route" => json.Replace("\"route\":\"/orders\",", string.Empty, StringComparison.Ordinal),
+        "methods" => json.Replace("\"methods\":[\"GET\"],", string.Empty, StringComparison.Ordinal),
+        "authorization" => json.Replace("\"authorization\":\"ExplicitProtected\",", string.Empty, StringComparison.Ordinal),
+        "policies" => json.Replace("\"policies\":[],", string.Empty, StringComparison.Ordinal),
+        "roles" => json.Replace("\"roles\":[],", string.Empty, StringComparison.Ordinal),
+        "schemes" => json.Replace("\"schemes\":[],", string.Empty, StringComparison.Ordinal),
+        "usesDefaultPolicy" => json.Replace("\"usesDefaultPolicy\":false,", string.Empty, StringComparison.Ordinal),
+        "usesFallbackPolicy" => json.Replace("\"usesFallbackPolicy\":false,", string.Empty, StringComparison.Ordinal),
+        "requirements" => json.Replace("\"requirements\":[\"requirement\"],", string.Empty, StringComparison.Ordinal),
+        "requirementFingerprint" => json.Replace(
+            ",\"requirementFingerprint\":\"" + AuthSurfaceCanonicalizer.Fingerprint(["requirement"]) + "\"",
+            string.Empty,
+            StringComparison.Ordinal),
+        _ => throw new ArgumentOutOfRangeException(nameof(field), field, null),
+    };
+
+    private static string ReplaceEndpointFieldValue(string json, string field, string replacement)
+    {
+        string pattern = $"\\\"{System.Text.RegularExpressions.Regex.Escape(field)}\\\"\\s*:\\s*(?:\\\"(?:\\\\.|[^\\\"\\\\])*\\\"|\\[[^]]*\\]|true|false)";
+        return new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+            .Replace(json, match => match.Value[..(match.Value.IndexOf(':') + 1)] + replacement, 1);
+    }
+
+    private static string DuplicateEndpointField(string json, string field)
+    {
+        string pattern = $"\\\"{System.Text.RegularExpressions.Regex.Escape(field)}\\\"\\s*:\\s*(?:\\\"(?:\\\\.|[^\\\"\\\\])*\\\"|\\[[^]]*\\]|true|false)";
+        return new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+            .Replace(json, match => match.Value + "," + match.Value, 1);
+    }
 
     private static AuthSurfaceEndpoint Endpoint(
         string route,
@@ -504,6 +692,17 @@ public sealed class BaselineSchemaContractTests
             usesFallbackPolicy,
             requirements,
             AuthSurfaceCanonicalizer.Fingerprint(requirements));
+
+    private static AuthSurfaceEndpoint EndpointWithRequirement(string requirement) => Endpoint(
+        "/boundary",
+        "GET",
+        AuthSurfaceAuthorizationKind.ExplicitProtected,
+        [],
+        [],
+        [],
+        usesDefaultPolicy: false,
+        usesFallbackPolicy: false,
+        [requirement]);
 
     private static string FindRepositoryRoot()
     {

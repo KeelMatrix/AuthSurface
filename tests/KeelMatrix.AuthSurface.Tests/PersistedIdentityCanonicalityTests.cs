@@ -13,6 +13,72 @@ namespace KeelMatrix.AuthSurface.Tests;
 
 public sealed class PersistedIdentityCanonicalityTests
 {
+    [Theory]
+    [MemberData(nameof(GeneratedRegexPolicyCases))]
+    public async Task GeneratedRegexPoliciesWithDelimiterTextRoundTripThroughBaseline(IParameterPolicy policy)
+    {
+        RoutePattern pattern = ProgrammaticPatternWithDefault(policy, "x?");
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(pattern)])],
+            new AllowingPolicyProvider()).ScanAsync();
+        AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+
+        Assert.Contains("regex64(", endpoint.Route, StringComparison.Ordinal);
+        Assert.Equal(endpoint.Identity, Assert.Single(roundTrip.Endpoints).Identity);
+        Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid, endpoint.Route);
+    }
+
+    public static IEnumerable<object[]> GeneratedRegexPolicyCases()
+    {
+        const System.Text.RegularExpressions.RegexOptions options =
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant |
+            System.Text.RegularExpressions.RegexOptions.Compiled;
+
+        yield return new object[]
+        {
+            new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("(?:;options=521),foo", options)),
+        };
+        yield return new object[]
+        {
+            new OptionalRouteConstraint(new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("(?:foo;options=521),bar", options))),
+        };
+        yield return new object[]
+        {
+            new CompositeRouteConstraint([
+                new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("foo(?:bar;options=521)", options)),
+                new MinRouteConstraint(2),
+            ]),
+        };
+        yield return new object[]
+        {
+            new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("(?:(?:foo;options=521))", options)),
+        };
+        yield return new object[]
+        {
+            new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("(?:(?:a;options=521)(?:b;options=521))", options)),
+        };
+        yield return new object[]
+        {
+            new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("(?:é/\\{foo\\},bar;options=521)", options)),
+        };
+        yield return new object[]
+        {
+            new CompositeRouteConstraint([
+                new OptionalRouteConstraint(new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("(?:a;options=521),b(?:c;options=521),d", options))),
+                new OptionalRouteConstraint(new CompositeRouteConstraint([
+                    new RegexRouteConstraint(new System.Text.RegularExpressions.Regex("(?:foo;options=521),bar", options)),
+                    new IntRouteConstraint(),
+                ])),
+            ]),
+        };
+    }
+
     [Fact]
     public async Task WriterEmittableTextualAndProgrammaticRoutesRoundTripThroughBaseline()
     {

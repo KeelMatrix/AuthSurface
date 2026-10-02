@@ -11,6 +11,8 @@ public sealed class AuthSurfaceBaseline
     /// <summary>The first supported baseline schema version.</summary>
     public const int CurrentSchemaVersion = 1;
 
+    internal const int MaximumDocumentBytes = 1_048_576;
+
     private const int DiagnosticPropertyNameLimit = 128;
 
     private AuthSurfaceBaseline(IEnumerable<AuthSurfaceEndpoint> endpoints)
@@ -49,10 +51,10 @@ public sealed class AuthSurfaceBaseline
 
     /// <summary>Reads a bounded, validated baseline without modifying the file.</summary>
     /// <param name="path">The local baseline path.</param>
-    /// <param name="maximumBytes">The maximum accepted file size.</param>
+    /// <param name="maximumBytes">The maximum accepted UTF-8 file size; the default is 1,048,576 bytes.</param>
     /// <remarks>Bound <c>v1:</c> identities are accepted only when the decoded binding reconstructs through the route factory and generated-policy registry used by the writer, then re-encodes to the supplied token byte-for-byte. Non-writer-emittable or non-canonical identities fail closed as <c>baseline-malformed</c>; the input file is never rewritten.</remarks>
     /// <returns>The validated baseline.</returns>
-    public static AuthSurfaceBaseline Read(string path, int maximumBytes = 1_048_576)
+    public static AuthSurfaceBaseline Read(string path, int maximumBytes = MaximumDocumentBytes)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
@@ -208,19 +210,24 @@ public sealed class AuthSurfaceBaseline
     /// <summary>Writes the baseline explicitly as canonical UTF-8 JSON.</summary>
     /// <param name="path">The local destination path.</param>
     /// <param name="overwrite">Whether an existing file may be replaced.</param>
+    /// <remarks>The complete serialized document is validated and must not exceed the default 1,048,576-byte reader bound before a destination directory or file is created or replaced.</remarks>
     public void Write(string path, bool overwrite)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         string fullPath = Path.GetFullPath(path);
+        byte[] bytes = Serialize();
+        if (bytes.Length > MaximumDocumentBytes)
+        {
+            throw new AuthSurfaceBaselineException(
+                AuthSurfaceDiagnosticCode.BaselineTooLarge,
+                $"The baseline exceeds the maximum size of {MaximumDocumentBytes:N0} bytes.");
+        }
+
         string? directory = Path.GetDirectoryName(fullPath);
         if (directory is not null)
         {
             Directory.CreateDirectory(directory);
         }
-
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(ToDocumentWithEndpoints(), JsonOptions);
-        string text = System.Text.Encoding.UTF8.GetString(bytes).Replace("\r\n", "\n", StringComparison.Ordinal) + "\n";
-        bytes = System.Text.Encoding.UTF8.GetBytes(text);
 
         if (!overwrite)
         {
@@ -293,6 +300,20 @@ public sealed class AuthSurfaceBaseline
     [
         "route",
         "identity",
+        "methods",
+        "authorization",
+        "policies",
+        "roles",
+        "schemes",
+        "usesDefaultPolicy",
+        "usesFallbackPolicy",
+        "requirements",
+        "requirementFingerprint",
+    ];
+
+    private static readonly HashSet<string> RequiredEndpointFields =
+    [
+        "route",
         "methods",
         "authorization",
         "policies",
@@ -457,6 +478,7 @@ public sealed class AuthSurfaceBaseline
                 EndpointFields,
                 AuthSurfaceDiagnosticCode.BaselineUnknownEndpointField,
                 path);
+            ValidateRequiredEndpointFields(endpoint, path);
             ValidateEndpointFieldTypes(endpoint, path);
             index++;
         }
@@ -514,6 +536,19 @@ public sealed class AuthSurfaceBaseline
         ValidateStringArray(endpoint, "requirements", path);
         ValidateBoolean(endpoint, "usesDefaultPolicy", path);
         ValidateBoolean(endpoint, "usesFallbackPolicy", path);
+    }
+
+    private static void ValidateRequiredEndpointFields(JsonElement endpoint, string path)
+    {
+        foreach (string field in RequiredEndpointFields)
+        {
+            if (!endpoint.TryGetProperty(field, out JsonElement property) || property.ValueKind == JsonValueKind.Null)
+            {
+                throw new AuthSurfaceBaselineException(
+                    AuthSurfaceDiagnosticCode.BaselineFieldType,
+                    $"The baseline field '{path}.{field}' is required and cannot be null.");
+            }
+        }
     }
 
     private static void ValidateString(JsonElement value, string name, string path)
@@ -574,6 +609,16 @@ public sealed class AuthSurfaceBaseline
         BaselineDocument document = ToDocument();
         document.Endpoints = Endpoints.Select(ToDocument).ToList();
         return document;
+    }
+
+    internal byte[] Serialize()
+    {
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(ToDocumentWithEndpoints(), JsonOptions);
+        string text = System.Text.Encoding.UTF8.GetString(bytes).Replace("\r\n", "\n", StringComparison.Ordinal) + "\n";
+        bytes = System.Text.Encoding.UTF8.GetBytes(text);
+        using JsonDocument document = JsonDocument.Parse(bytes, JsonDocumentOptions);
+        ValidateSchema(document.RootElement);
+        return bytes;
     }
 
     private static EndpointDocument ToDocument(AuthSurfaceEndpoint endpoint) => new()

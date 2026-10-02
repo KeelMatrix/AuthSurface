@@ -55,9 +55,11 @@ public sealed class AuthSurfaceEndpoint
     public IReadOnlyList<string> AuthenticationSchemes { get; }
 
     /// <summary>Gets a value indicating whether the default policy contributed.</summary>
+    /// <remarks>The schema-1 persisted field is explicit and never inferred from an omitted value.</remarks>
     public bool UsesDefaultPolicy { get; }
 
     /// <summary>Gets a value indicating whether the fallback policy contributed.</summary>
+    /// <remarks>The schema-1 persisted field is explicit and never inferred from an omitted value.</remarks>
     public bool UsesFallbackPolicy { get; }
 
     /// <summary>Gets canonical supported requirement descriptions in framework combination order.</summary>

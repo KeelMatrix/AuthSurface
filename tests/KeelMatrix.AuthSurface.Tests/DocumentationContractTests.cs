@@ -67,6 +67,10 @@ public sealed class DocumentationContractTests
         Assert.Contains("deliberate narrower boundary", documentation, StringComparison.Ordinal);
         Assert.Contains("non-encoded catch-all combined with any generated/content-less policy", documentation, StringComparison.Ordinal);
         Assert.Contains("before creating a directory or file", documentation, StringComparison.Ordinal);
+        Assert.Contains("1,048,576-byte UTF-8 document bound", documentation, StringComparison.Ordinal);
+        Assert.Contains("explicit JSON booleans", documentation, StringComparison.Ordinal);
+        Assert.Contains("regex64(<base64url-no-padding(UTF-8 pattern)>;options=521)", documentation, StringComparison.Ordinal);
+        Assert.Contains("nested `optional(...)` and `composite(...)` policies", documentation, StringComparison.Ordinal);
         Assert.DoesNotContain("FindUnparseablePolicyBoundaries", documentation, StringComparison.Ordinal);
         Assert.DoesNotContain("at each route character", documentation, StringComparison.Ordinal);
 

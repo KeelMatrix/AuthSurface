@@ -228,7 +228,7 @@ public sealed class IdentityContractTests
             [source],
             new AllowingPolicyProvider()).ScanAsync();
         AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
-        Assert.Contains("{{1,3}}", endpoint.Route, StringComparison.Ordinal);
+        Assert.Contains("programmatic:regex64(", endpoint.Route, StringComparison.Ordinal);
 
         using var directory = new TemporaryDirectory();
         string path = Path.Combine(directory.Path, "authsurface.json");
@@ -327,7 +327,7 @@ public sealed class IdentityContractTests
             new AllowingPolicyProvider()).ScanAsync();
 
         AuthSurfaceEndpoint endpoint = Assert.Single(report.Endpoints);
-        Assert.Equal("/items/{id:programmatic:regex([)]:payload;options=521)}", endpoint.Route);
+        Assert.Equal("/items/{id:programmatic:regex64(WyldOnBheWxvYWQ;options=521)}", endpoint.Route);
 
         using var directory = new TemporaryDirectory();
         string path = Path.Combine(directory.Path, "authsurface.json");
@@ -362,7 +362,7 @@ public sealed class IdentityContractTests
             persistedIdentity,
             identity => ReplaceStructuralRoute(
                 identity,
-                "/items/{id:programmatic:regex([)]:text:payload;options=521)}"));
+                "/items/{id:programmatic:regex64(WyldOnBheWxvYWQ;options=521:text:)}"));
         File.WriteAllText(path, json.Replace(persistedIdentity, mutatedIdentity, StringComparison.Ordinal));
         byte[] before = File.ReadAllBytes(path);
 
@@ -1336,8 +1336,7 @@ public sealed class IdentityContractTests
                 structuralRoute.Replace("=literal:text:marker", "=literal:text:text:marker", StringComparison.Ordinal),
             "regex-payload" => structuralRoute.Replace(";options=521", ";options=521:text:", StringComparison.Ordinal),
             "nested-payload" => structuralRoute.Replace("int,min", "int:text:min", StringComparison.Ordinal),
-            "escaped-brace-payload" =>
-                structuralRoute.Replace("{{1,3}}", "{{1,3}}:text:", StringComparison.Ordinal),
+            "escaped-brace-payload" => structuralRoute.Replace("regex64(", "regex64(A", StringComparison.Ordinal),
             _ => throw new ArgumentOutOfRangeException(nameof(mutationCase)),
         };
 
@@ -1347,7 +1346,7 @@ public sealed class IdentityContractTests
         ("programmatic:int", static () => new IntRouteConstraint()),
         ("programmatic:composite(int,min(2))", static () => new CompositeRouteConstraint([new IntRouteConstraint(), new MinRouteConstraint(2)])),
         ("programmatic:optional(int)", static () => new OptionalRouteConstraint(new IntRouteConstraint())),
-        ("programmatic:regex(^\\d+$;options=521)", static () => new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
+        ("programmatic:regex64(XlxkKyQ;options=521)", static () => new RegexRouteConstraint(new System.Text.RegularExpressions.Regex(
             "^\\d+$",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase |
             System.Text.RegularExpressions.RegexOptions.CultureInvariant |

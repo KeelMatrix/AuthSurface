@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Constraints;
@@ -26,6 +27,9 @@ internal static class AuthSurfaceParameterPolicyRegistry
 {
     private const RegexOptions FrameworkInlineRegexOptions =
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled;
+    private const string RegexToken = "regex64";
+    private const string RegexOptionsSuffix = ";options=521";
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     internal static IReadOnlyList<AuthSurfaceParameterPolicySpec> Supported { get; } =
     [
@@ -62,14 +66,7 @@ internal static class AuthSurfaceParameterPolicyRegistry
         new(typeof(RegexRouteConstraint), static (policy, parameterName) =>
         {
             RegexRouteConstraint constraint = (RegexRouteConstraint)policy;
-            if (constraint.Constraint.Options != FrameworkInlineRegexOptions)
-            {
-                throw new AuthSurfaceAnalysisException(
-                    AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
-                    $"Route parameter '{parameterName}' uses a regex policy with unsupported options '{constraint.Constraint.Options}'; AuthSurface only supports the framework inline regex defaults.");
-            }
-
-            return $"regex({constraint.Constraint};options={((int)constraint.Constraint.Options).ToString(CultureInfo.InvariantCulture)})";
+            return RenderRegexPolicy(constraint, parameterName);
         }),
         new(typeof(RequiredRouteConstraint), static (_, _) => "required"),
     ];
@@ -141,15 +138,15 @@ internal static class AuthSurfaceParameterPolicyRegistry
 
         string token = expression[..open];
         string arguments = expression[(open + 1)..^1];
-        if (token == "regex")
+        if (token == RegexToken)
         {
-            const string optionsSuffix = ";options=521";
-            if (!arguments.EndsWith(optionsSuffix, StringComparison.Ordinal))
+            if (!arguments.EndsWith(RegexOptionsSuffix, StringComparison.Ordinal))
             {
                 throw InvalidGeneratedPolicy(expression, parameterName);
             }
 
-            string pattern = arguments[..^optionsSuffix.Length];
+            string encodedPattern = arguments[..^RegexOptionsSuffix.Length];
+            string pattern = DecodeBase64UrlUtf8(encodedPattern, expression, parameterName);
             try
             {
                 return new RegexRouteConstraint(new Regex(pattern, FrameworkInlineRegexOptions));
@@ -213,7 +210,7 @@ internal static class AuthSurfaceParameterPolicyRegistry
         int depth = 0;
         for (int index = 0; index < arguments.Length; index++)
         {
-            if (arguments.AsSpan(index).StartsWith("regex("))
+            if (arguments.AsSpan(index).StartsWith(RegexToken + "("))
             {
                 int regexEnd = FindRegexExpressionEnd(arguments, index, expression, parameterName);
                 index = regexEnd;
@@ -254,8 +251,8 @@ internal static class AuthSurfaceParameterPolicyRegistry
         string expression,
         string parameterName)
     {
-        const string suffix = ";options=521)";
-        int search = start + "regex(".Length;
+        string suffix = RegexOptionsSuffix + ")";
+        int search = start + RegexToken.Length + 1;
         while (search < arguments.Length)
         {
             int suffixStart = arguments.IndexOf(suffix, search, StringComparison.Ordinal);
@@ -274,6 +271,69 @@ internal static class AuthSurfaceParameterPolicyRegistry
         }
 
         throw InvalidGeneratedPolicy(expression, parameterName);
+    }
+
+    private static string DecodeBase64UrlUtf8(string encoded, string expression, string parameterName)
+    {
+        if (encoded.Length % 4 == 1 || encoded.Any(static character =>
+                !(character is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '-' or '_')))
+        {
+            throw InvalidGeneratedPolicy(expression, parameterName);
+        }
+
+        string padded = encoded
+            .Replace('-', '+')
+            .Replace('_', '/') +
+            new string('=', (4 - encoded.Length % 4) % 4);
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(padded);
+        }
+        catch (FormatException)
+        {
+            throw InvalidGeneratedPolicy(expression, parameterName);
+        }
+
+        if (!string.Equals(EncodeBase64Url(bytes), encoded, StringComparison.Ordinal))
+        {
+            throw InvalidGeneratedPolicy(expression, parameterName);
+        }
+
+        try
+        {
+            return StrictUtf8.GetString(bytes);
+        }
+        catch (DecoderFallbackException)
+        {
+            throw InvalidGeneratedPolicy(expression, parameterName);
+        }
+    }
+
+    private static string EncodeBase64Url(byte[] bytes) => Convert.ToBase64String(bytes)
+        .TrimEnd('=')
+        .Replace('+', '-')
+        .Replace('/', '_');
+
+    private static string RenderRegexPolicy(RegexRouteConstraint constraint, string parameterName)
+    {
+        if (constraint.Constraint.Options != FrameworkInlineRegexOptions)
+        {
+            throw new AuthSurfaceAnalysisException(
+                AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
+                $"Route parameter '{parameterName}' uses a regex policy with unsupported options '{constraint.Constraint.Options}'; AuthSurface only supports the framework inline regex defaults.");
+        }
+
+        try
+        {
+            return $"{RegexToken}({EncodeBase64Url(StrictUtf8.GetBytes(constraint.Constraint.ToString()))}{RegexOptionsSuffix})";
+        }
+        catch (EncoderFallbackException)
+        {
+            throw new AuthSurfaceAnalysisException(
+                AuthSurfaceDiagnosticCode.UnsupportedParameterPolicy,
+                $"Route parameter '{parameterName}' uses a regex pattern that cannot be represented as UTF-8.");
+        }
     }
 
     private static AuthSurfaceAnalysisException InvalidGeneratedPolicy(

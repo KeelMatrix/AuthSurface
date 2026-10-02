@@ -34,6 +34,12 @@ function Assert-Rejected([string] $Name, [scriptblock] $Mutation) {
 & $validator -Root $sourceRoot
 
 $releaseWorkflow = Get-Content -LiteralPath (Join-Path $sourceRoot '.github/workflows/release.yml') -Raw
+$releaseJobTimeout = [regex]::Match(
+    $releaseWorkflow,
+    '(?ms)^  release:\s*\r?\n(?:(?!^  \S).)*?^    timeout-minutes:\s+(?<minutes>\S+)\s*$')
+if (-not $releaseJobTimeout.Success -or $releaseJobTimeout.Groups['minutes'].Value -notmatch '^[1-9]\d*$' -or [int]$releaseJobTimeout.Groups['minutes'].Value -gt 120) {
+    throw 'Release workflow must define a job-level timeout between 1 and 120 minutes.'
+}
 $pushCommands = @([regex]::Matches($releaseWorkflow, '(?m)^\s*dotnet nuget push\s+.*$') | ForEach-Object { $_.Value.Trim() })
 if ($pushCommands.Count -ne 1 -or $pushCommands[0] -notmatch '\.nupkg') {
     throw 'Release workflow must use one package push that covers the associated symbol package.'
@@ -99,6 +105,38 @@ Assert-Rejected 'workflow action missing from allowlist' {
     $ci = Get-Content -LiteralPath $ciPath -Raw
     $ci = $ci.Replace('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/checkout@a98b56852c35b8e3190ac28c8c2271da59106c68')
     Set-Content -LiteralPath $ciPath -Value $ci -Encoding utf8
+}
+
+Assert-Rejected 'release job timeout missing' {
+    param($testRoot)
+    $releasePath = Join-Path $testRoot '.github/workflows/release.yml'
+    $release = Get-Content -LiteralPath $releasePath -Raw
+    $release = $release -replace '(?m)^    timeout-minutes:\s+\S+\r?\n', ''
+    Set-Content -LiteralPath $releasePath -Value $release -Encoding utf8
+}
+
+Assert-Rejected 'release job timeout zero' {
+    param($testRoot)
+    $releasePath = Join-Path $testRoot '.github/workflows/release.yml'
+    $release = Get-Content -LiteralPath $releasePath -Raw
+    $release = $release -replace '(?m)^    timeout-minutes:\s+\S+\r?\n', "    timeout-minutes: 0`n"
+    Set-Content -LiteralPath $releasePath -Value $release -Encoding utf8
+}
+
+Assert-Rejected 'release job timeout unreasonably large' {
+    param($testRoot)
+    $releasePath = Join-Path $testRoot '.github/workflows/release.yml'
+    $release = Get-Content -LiteralPath $releasePath -Raw
+    $release = $release -replace '(?m)^    timeout-minutes:\s+\S+\r?\n', "    timeout-minutes: 121`n"
+    Set-Content -LiteralPath $releasePath -Value $release -Encoding utf8
+}
+
+Assert-Rejected 'release job timeout invalid' {
+    param($testRoot)
+    $releasePath = Join-Path $testRoot '.github/workflows/release.yml'
+    $release = Get-Content -LiteralPath $releasePath -Raw
+    $release = $release -replace '(?m)^    timeout-minutes:\s+\S+\r?\n', "    timeout-minutes: thirty`n"
+    Set-Content -LiteralPath $releasePath -Value $release -Encoding utf8
 }
 
 Assert-Rejected 'correctly pinned deprecated JavaScript runtime' {

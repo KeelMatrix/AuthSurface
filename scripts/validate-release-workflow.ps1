@@ -85,6 +85,15 @@ if ($releaseWorkflow -notmatch '(?m)^\s+-\s+''v\*''\s*$') {
     throw 'Release workflow must accept version tags through the tag trigger and validate the exact format in the job.'
 }
 
+$releaseJobTimeout = [regex]::Match(
+    $releaseWorkflow,
+    '(?ms)^  release:\s*\r?\n(?:(?!^  \S).)*?^    timeout-minutes:\s+(?<minutes>\S+)\s*$')
+if (-not $releaseJobTimeout.Success -or
+    $releaseJobTimeout.Groups['minutes'].Value -notmatch '^[1-9]\d*$' -or
+    [int]$releaseJobTimeout.Groups['minutes'].Value -gt 120) {
+    throw 'Release workflow must define a job-level timeout between 1 and 120 minutes.'
+}
+
 $actionPinsPath = Join-Path $root 'scripts/release-action-pins.txt'
 if (-not (Test-Path -LiteralPath $actionPinsPath -PathType Leaf)) {
     throw "Release action pin allowlist is missing: $actionPinsPath"
