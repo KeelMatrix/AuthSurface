@@ -152,4 +152,5 @@ Assert-Rejected 'correctly pinned deprecated JavaScript runtime' {
     Set-Content -LiteralPath $allowlistPath -Value $allowlist.Replace($currentCheckout, $deprecatedCheckout) -Encoding utf8
 }
 
+$global:LASTEXITCODE = 0
 Write-Output 'Workflow validator mutation tests passed: real workflows, operational single-push/exit-code checks, publication failure control, unpinned action, tag reference, annotated tag object SHA, missing allowlist entry, and deprecated JavaScript runtime.'
