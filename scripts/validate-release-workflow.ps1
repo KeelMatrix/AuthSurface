@@ -178,30 +178,25 @@ if ($buildIndex -lt 0 -or $testIndex -lt $buildIndex -or $packIndex -lt $testInd
     throw 'Release workflow must build and test before packing.'
 }
 
+function Get-GitHubResponse([string] $Uri) {
+    return Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 -Headers @{
+        'User-Agent' = 'KeelMatrix-AuthSurface-Validator'
+        Accept = 'application/vnd.github+json'
+    } -Uri $Uri
+}
+
 function Assert-CommitObject([string] $Action) {
     $parts = $Action.Split('@', 2)
     $repository = $parts[0]
     $sha = $parts[1]
-    $probeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('authsurface-action-pin-' + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $probeRoot -Force | Out-Null
-    $oldPrompt = $env:GIT_TERMINAL_PROMPT
-    $env:GIT_TERMINAL_PROMPT = '0'
     try {
-        & git init --bare --quiet $probeRoot 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Could not initialize action pin probe repository for $Action." }
-
-        & git -C $probeRoot fetch --no-tags --depth=1 "https://github.com/$repository.git" $sha 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Action pin does not resolve in its repository: $Action." }
-
-        $objectType = (& git -C $probeRoot cat-file -t $sha 2>$null).Trim()
-        if ($LASTEXITCODE -ne 0 -or $objectType -ne 'commit') {
-            throw "Action pin must resolve to a commit object, not '$objectType': $Action."
+        $response = Get-GitHubResponse "https://api.github.com/repos/$repository/commits/$sha"
+        if ($null -eq $response -or $response.sha -ne $sha) {
+            throw "Action pin did not resolve to the requested commit object: $Action."
         }
     }
-    finally {
-        if ($null -eq $oldPrompt) { Remove-Item Env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue }
-        else { $env:GIT_TERMINAL_PROMPT = $oldPrompt }
-        Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
+    catch {
+        throw "Could not verify pinned action commit through GitHub: $Action. $($_.Exception.Message)"
     }
 }
 
@@ -218,7 +213,7 @@ function Get-ActionMetadata([string] $Action) {
     foreach ($metadataFile in @('action.yml', 'action.yaml')) {
         $uri = "https://raw.githubusercontent.com/$repository/$sha/$metadataFile"
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $uri
+            $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Headers @{ 'User-Agent' = 'KeelMatrix-AuthSurface-Validator' } -Uri $uri
             if ($response.StatusCode -eq 200) {
                 $metadata = $response.Content
                 break
