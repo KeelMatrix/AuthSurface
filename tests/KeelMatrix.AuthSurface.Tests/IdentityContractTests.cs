@@ -176,6 +176,121 @@ public sealed class IdentityContractTests
         Assert.Contains(result.Violations, violation => violation.Code == "endpoint-removed");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DistinctStructuralIdentitiesWithCollidingDisplayRouteRoundTripThroughBaseline(bool reverseOrder)
+    {
+        RoutePattern textualPattern = TextualPattern("programmatic:int");
+        RoutePattern runtimePattern = ProgrammaticPattern(new IntRouteConstraint());
+        RouteEndpoint[] endpoints =
+        [
+            BuildEndpoint(textualPattern),
+            BuildEndpoint(runtimePattern),
+        ];
+        if (reverseOrder)
+        {
+            Array.Reverse(endpoints);
+        }
+
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource(endpoints)],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        Assert.Collection(report.Endpoints, _ => { }, _ => { });
+        Assert.Equal(2, report.Endpoints.Select(static endpoint => endpoint.Identity).Distinct(StringComparer.Ordinal).Count());
+        Assert.Single(report.Endpoints.Select(static endpoint => endpoint.Route).Distinct(StringComparer.Ordinal));
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline baseline = AuthSurfaceBaseline.Create(report, path, overwrite: false);
+        AuthSurfaceBaseline roundTrip = AuthSurfaceBaseline.Read(path);
+
+        Assert.True(AuthSurfaceVerifier.Compare(report, baseline).IsValid);
+        Assert.True(AuthSurfaceVerifier.Compare(report, roundTrip).IsValid);
+        Assert.True(AuthSurfaceVerifier.Compare(report, path).IsValid);
+    }
+
+    [Fact]
+    public async Task GenuineStructuralDuplicateFailsAtScan()
+    {
+        AuthSurfaceAnalysisException exception = await Assert.ThrowsAsync<AuthSurfaceAnalysisException>(
+            async () => await new AuthSurfaceScanner(
+                [new DefaultEndpointDataSource([
+                    BuildEndpoint(TextualPattern("programmatic:int")),
+                    BuildEndpoint(TextualPattern("programmatic:int")),
+                ])],
+                new AllowingPolicyProvider()).ScanAsync());
+
+        Assert.Equal("duplicate-endpoint-identity", exception.Code);
+    }
+
+    [Fact]
+    public async Task GenuineStructuralDuplicateCannotCreateOrReplaceBaseline()
+    {
+        AuthSurfaceReport singleReport = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(TextualPattern("programmatic:int"))])],
+            new AllowingPolicyProvider()).ScanAsync();
+        AuthSurfaceEndpoint endpoint = Assert.Single(singleReport.Endpoints);
+        AuthSurfaceReport duplicateReport = new([endpoint, endpoint], []);
+
+        using var directory = new TemporaryDirectory();
+        string newPath = Path.Combine(directory.Path, "new", "authsurface.json");
+        AuthSurfaceBaselineException newException = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Create(duplicateReport, newPath, overwrite: true));
+
+        Assert.Equal("baseline-duplicate-identity", newException.Code);
+        Assert.False(File.Exists(newPath));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(newPath)!));
+
+        string existingPath = Path.Combine(directory.Path, "existing", "authsurface.json");
+        AuthSurfaceBaseline.Create(singleReport, existingPath, overwrite: false);
+        byte[] before = File.ReadAllBytes(existingPath);
+
+        AuthSurfaceBaselineException existingException = Assert.Throws<AuthSurfaceBaselineException>(
+            () => AuthSurfaceBaseline.Create(duplicateReport, existingPath, overwrite: true));
+
+        Assert.Equal("baseline-duplicate-identity", existingException.Code);
+        Assert.Equal(before, File.ReadAllBytes(existingPath));
+    }
+
+    [Theory]
+    [MemberData(nameof(ReservedProgrammaticMarkerCases))]
+    public async Task CollidingDisplayRoutesWithNestedPolicyProvenanceRoundTrip(
+        string textualPolicy,
+        IParameterPolicy runtimePolicy)
+    {
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([
+                BuildEndpoint(TextualPattern(textualPolicy)),
+                BuildEndpoint(ProgrammaticPattern(runtimePolicy)),
+            ])],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+
+        Assert.True(AuthSurfaceVerifier.Compare(report, path).IsValid);
+    }
+
+    [Fact]
+    public async Task CollidingDisplayRoutesWithDifferentHttpMethodsRemainDistinct()
+    {
+        AuthSurfaceReport report = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([
+                BuildEndpoint(TextualPattern("programmatic:int"), "GET"),
+                BuildEndpoint(ProgrammaticPattern(new IntRouteConstraint()), "POST"),
+            ])],
+            new AllowingPolicyProvider()).ScanAsync();
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "authsurface.json");
+        AuthSurfaceBaseline.Create(report, path, overwrite: false);
+
+        Assert.True(AuthSurfaceVerifier.Compare(report, path).IsValid);
+    }
+
     [Fact]
     public void RawTextDoesNotDiscardMergedDefaultsOrParameterPolicies()
     {
@@ -702,7 +817,7 @@ public sealed class IdentityContractTests
     }
 
     [Fact]
-    public void BaselineRejectsDuplicateRouteMethodRecordsForUnparseableRoute()
+    public void BaselineRejectsDuplicateStructuralIdentityRecordsForUnparseableRoute()
     {
         string fingerprint = AuthSurfaceCanonicalizer.Fingerprint([]);
         RoutePattern pattern = RoutePatternFactory.Pattern(
@@ -1428,10 +1543,10 @@ public sealed class IdentityContractTests
             .Replace('/', '_');
     }
 
-    private static RouteEndpoint BuildEndpoint(RoutePattern pattern)
+    private static RouteEndpoint BuildEndpoint(RoutePattern pattern, params string[] methods)
     {
         RouteEndpointBuilder builder = new(_ => Task.CompletedTask, pattern, order: 0);
-        builder.Metadata.Add(new HttpMethodMetadata(["GET"]));
+        builder.Metadata.Add(new HttpMethodMetadata(methods.Length == 0 ? ["GET"] : methods));
         builder.Metadata.Add(new AllowAnonymousAttribute());
         return (RouteEndpoint)builder.Build();
     }

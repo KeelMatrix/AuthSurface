@@ -21,14 +21,21 @@ public static class AuthSurfaceVerifier
         return result;
     }
 
-    /// <summary>Compares a scan with a validated baseline.</summary>
+    /// <summary>Compares a scan with a validated baseline using structural canonical endpoint identity.</summary>
     /// <param name="report">The current scan report.</param>
     /// <param name="baseline">The earlier accepted baseline.</param>
+    /// <remarks>Distinct proven structural identities remain distinct even when readable route display collides; genuine duplicate or unprovable identities fail closed before comparison.</remarks>
     /// <returns>The structured comparison result.</returns>
     public static AuthSurfaceVerificationResult Compare(AuthSurfaceReport report, AuthSurfaceBaseline baseline)
     {
         ArgumentNullException.ThrowIfNull(report);
         ArgumentNullException.ThrowIfNull(baseline);
+        AuthSurfaceIdentityContract.ValidateCollection(
+            report.Endpoints,
+            AuthSurfaceIdentityValidationContext.Analysis);
+        AuthSurfaceIdentityContract.ValidateCollection(
+            baseline.Endpoints,
+            AuthSurfaceIdentityValidationContext.Baseline);
 
         var violations = new List<AuthSurfaceViolation>(report.PolicyViolations);
         Dictionary<string, AuthSurfaceEndpoint> current = report.Endpoints.ToDictionary(
@@ -83,6 +90,7 @@ public static class AuthSurfaceVerifier
     /// <summary>Reads a local baseline and compares it with a scan without writing the file.</summary>
     /// <param name="report">The current scan report.</param>
     /// <param name="baselinePath">The local baseline path.</param>
+    /// <remarks>The read baseline and current report use the same structural canonical identity collection rule as the in-memory overload.</remarks>
     /// <returns>The structured comparison result.</returns>
     public static AuthSurfaceVerificationResult Compare(AuthSurfaceReport report, string baselinePath) =>
         Compare(report, AuthSurfaceBaseline.Read(baselinePath));

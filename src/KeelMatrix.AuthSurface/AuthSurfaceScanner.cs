@@ -46,7 +46,6 @@ public sealed class AuthSurfaceScanner
     {
         options ??= new AuthSurfaceScanOptions();
         var endpoints = new List<AuthSurfaceEndpoint>();
-        var identities = new HashSet<string>(StringComparer.Ordinal);
         var scanBudget = new AuthSurfaceScanBudget();
         int inputEndpointCount = 0;
 
@@ -143,18 +142,14 @@ public sealed class AuthSurfaceScanner
                         identity,
                         persistedIdentity);
 
-                    if (!identities.Add(record.Identity))
-                    {
-                        throw new AuthSurfaceAnalysisException(
-                            AuthSurfaceDiagnosticCode.DuplicateEndpointIdentity,
-                            $"Duplicate canonical endpoint identity '{route}' [{method}] was found; exclude or disambiguate the endpoint.");
-                    }
-
                     endpoints.Add(record);
                 }
             }
         }
 
+        AuthSurfaceIdentityContract.ValidateCollection(
+            endpoints,
+            AuthSurfaceIdentityValidationContext.Analysis);
         endpoints.Sort(AuthSurfaceCanonicalizer.CompareEndpoints);
         var violations = new List<AuthSurfaceViolation>();
         foreach (AuthSurfaceEndpoint endpoint in endpoints)

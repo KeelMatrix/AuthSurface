@@ -158,6 +158,19 @@ public sealed class PersistedIdentityCanonicalityTests
         Assert.Contains("non-encoded catch-all", exception.Message, StringComparison.Ordinal);
         Assert.False(File.Exists(path));
         Assert.False(Directory.Exists(Path.GetDirectoryName(path)!));
+
+        AuthSurfaceReport validReport = await new AuthSurfaceScanner(
+            [new DefaultEndpointDataSource([BuildEndpoint(RoutePatternFactory.Parse("/valid"))])],
+            new AllowingPolicyProvider()).ScanAsync();
+        string existingPath = Path.Combine(directory.Path, "existing", "authsurface.json");
+        AuthSurfaceBaseline.Create(validReport, existingPath, overwrite: false);
+        byte[] before = File.ReadAllBytes(existingPath);
+
+        AuthSurfaceAnalysisException existingException = Assert.Throws<AuthSurfaceAnalysisException>(
+            () => AuthSurfaceBaseline.Create(report, existingPath, overwrite: true));
+
+        Assert.Equal("unsupported-parameter-policy", existingException.Code);
+        Assert.Equal(before, File.ReadAllBytes(existingPath));
     }
 
     [Theory]

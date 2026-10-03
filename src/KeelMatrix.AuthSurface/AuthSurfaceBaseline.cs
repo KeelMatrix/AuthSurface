@@ -31,20 +31,15 @@ public sealed class AuthSurfaceBaseline
 
     /// <summary>Creates a baseline from a policy-compliant report without writing it.</summary>
     /// <param name="report">The completed runtime scan report.</param>
-    /// <remarks>Creation fails with <c>unsupported-parameter-policy</c> when a route uses a non-encoded catch-all with generated, content-less policy provenance that the reader cannot reconstruct losslessly.</remarks>
+    /// <remarks>Creation validates every endpoint's persisted identity and rejects structural duplicate identities. Distinct structural identities remain distinct even when their readable route display is the same. Creation fails with <c>unsupported-parameter-policy</c> when a route uses a non-encoded catch-all with generated, content-less policy provenance that the reader cannot reconstruct losslessly.</remarks>
     /// <returns>The in-memory baseline.</returns>
     public static AuthSurfaceBaseline Create(AuthSurfaceReport report)
     {
         ArgumentNullException.ThrowIfNull(report);
         report.AssertPolicyCompliant();
-        foreach (AuthSurfaceEndpoint endpoint in report.Endpoints)
-        {
-            string? persistedIdentity = GetPersistedIdentity(endpoint);
-            AuthSurfaceCanonicalizer.ValidateWriterReadableIdentity(
-                endpoint.Route,
-                endpoint.Method,
-                persistedIdentity);
-        }
+        AuthSurfaceIdentityContract.ValidateCollection(
+            report.Endpoints,
+            AuthSurfaceIdentityValidationContext.Baseline);
 
         return new AuthSurfaceBaseline(report.Endpoints);
     }
@@ -52,7 +47,7 @@ public sealed class AuthSurfaceBaseline
     /// <summary>Reads a bounded, validated baseline without modifying the file.</summary>
     /// <param name="path">The local baseline path.</param>
     /// <param name="maximumBytes">The maximum accepted UTF-8 file size; the default is 1,048,576 bytes.</param>
-    /// <remarks>Bound <c>v1:</c> identities are accepted only when the decoded binding reconstructs through the route factory and generated-policy registry used by the writer, then re-encodes to the supplied token byte-for-byte. Non-writer-emittable or non-canonical identities fail closed as <c>baseline-malformed</c>; the input file is never rewritten.</remarks>
+    /// <remarks>Bound <c>v1:</c> identities are accepted only when the decoded binding reconstructs through the route factory and generated-policy registry used by the writer, then re-encodes to the supplied token byte-for-byte. Collection identity is the structural canonical identity, so distinct proven structural identities may share readable route display while genuine structural duplicates fail closed as <c>baseline-duplicate-identity</c>. Non-writer-emittable or non-canonical identities fail closed as <c>baseline-malformed</c>; the input file is never rewritten.</remarks>
     /// <returns>The validated baseline.</returns>
     public static AuthSurfaceBaseline Read(string path, int maximumBytes = MaximumDocumentBytes)
     {
@@ -176,21 +171,9 @@ public sealed class AuthSurfaceBaseline
         try
         {
             var endpoints = document.Endpoints.Select(ToEndpoint).ToArray();
-            if (endpoints.Select(static endpoint => endpoint.Identity).Distinct(StringComparer.Ordinal).Count() != endpoints.Length)
-            {
-                throw new AuthSurfaceBaselineException(
-                    AuthSurfaceDiagnosticCode.BaselineDuplicateIdentity,
-                    "The baseline contains duplicate canonical endpoint identities.");
-            }
-
-            if (endpoints.Select(static endpoint => CanonicalRouteMethodKey(endpoint.Route, endpoint.Methods[0]))
-                .Distinct(StringComparer.Ordinal)
-                .Count() != endpoints.Length)
-            {
-                throw new AuthSurfaceBaselineException(
-                    AuthSurfaceDiagnosticCode.BaselineDuplicateIdentity,
-                    "The baseline contains duplicate route and HTTP method contracts.");
-            }
+            AuthSurfaceIdentityContract.ValidateCollection(
+                endpoints,
+                AuthSurfaceIdentityValidationContext.Baseline);
 
             return new AuthSurfaceBaseline(endpoints);
         }
@@ -210,7 +193,7 @@ public sealed class AuthSurfaceBaseline
     /// <summary>Writes the baseline explicitly as canonical UTF-8 JSON.</summary>
     /// <param name="path">The local destination path.</param>
     /// <param name="overwrite">Whether an existing file may be replaced.</param>
-    /// <remarks>The complete serialized document is validated and must not exceed the default 1,048,576-byte reader bound before a destination directory or file is created or replaced.</remarks>
+    /// <remarks>The complete serialized document, including collection-level structural identity uniqueness and writer-readable identities, is validated and must not exceed the default 1,048,576-byte reader bound before a destination directory or file is created or replaced.</remarks>
     public void Write(string path, bool overwrite)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -267,7 +250,7 @@ public sealed class AuthSurfaceBaseline
     /// <param name="report">The completed runtime scan report.</param>
     /// <param name="path">The local destination path.</param>
     /// <param name="overwrite">Whether an existing file may be replaced.</param>
-    /// <remarks>Creation validates that each persisted identity is readable before any destination directory or file is created.</remarks>
+    /// <remarks>Creation validates the complete collection, including structural identity uniqueness and persisted-identity readability, before any destination directory or file is created or replaced.</remarks>
     /// <returns>The baseline that was written.</returns>
     public static AuthSurfaceBaseline Create(AuthSurfaceReport report, string path, bool overwrite)
     {
@@ -611,8 +594,13 @@ public sealed class AuthSurfaceBaseline
         return document;
     }
 
+    /// <summary>Serializes the validated baseline as canonical UTF-8 JSON.</summary>
+    /// <remarks>Collection-level structural identity uniqueness and writer-readable persisted identities are validated before serialization.</remarks>
     internal byte[] Serialize()
     {
+        AuthSurfaceIdentityContract.ValidateCollection(
+            Endpoints,
+            AuthSurfaceIdentityValidationContext.Baseline);
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(ToDocumentWithEndpoints(), JsonOptions);
         string text = System.Text.Encoding.UTF8.GetString(bytes).Replace("\r\n", "\n", StringComparison.Ordinal) + "\n";
         bytes = System.Text.Encoding.UTF8.GetBytes(text);
@@ -624,7 +612,7 @@ public sealed class AuthSurfaceBaseline
     private static EndpointDocument ToDocument(AuthSurfaceEndpoint endpoint) => new()
     {
         Route = endpoint.Route,
-        Identity = GetPersistedIdentity(endpoint),
+        Identity = AuthSurfaceIdentityContract.GetPersistedIdentity(endpoint),
         Methods = endpoint.Methods.ToList(),
         Authorization = endpoint.AuthorizationKind.ToString(),
         Policies = endpoint.Policies.ToList(),
@@ -728,49 +716,6 @@ public sealed class AuthSurfaceBaseline
             calculatedFingerprint,
             identity,
             document.Identity);
-    }
-
-    private static string? GetPersistedIdentity(AuthSurfaceEndpoint endpoint)
-    {
-        if (endpoint.PersistedIdentity is not null)
-        {
-            return endpoint.PersistedIdentity;
-        }
-
-        try
-        {
-            if (string.Equals(
-                endpoint.Identity,
-                AuthSurfaceCanonicalizer.CanonicalIdentity(endpoint.Route, endpoint.Method),
-                StringComparison.Ordinal))
-            {
-                return null;
-            }
-        }
-        catch (Exception exception) when (exception is AuthSurfaceAnalysisException or FormatException or InvalidOperationException or ArgumentException or Microsoft.AspNetCore.Routing.Patterns.RoutePatternException)
-        {
-            // The lossless identity token below is the supported persistence path for
-            // programmatic patterns whose readable route cannot be parsed as route syntax.
-            // The reader validates this token by re-rendering its route-pattern binding.
-        }
-
-        return AuthSurfaceCanonicalizer.CreatePersistedIdentity(endpoint.Route, endpoint.Identity);
-    }
-
-    private static string CanonicalRouteMethodKey(string route, string method)
-    {
-        try
-        {
-            route = AuthSurfaceCanonicalizer.NormalizeRoute(
-                Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.Parse(route));
-        }
-        catch (Exception exception) when (exception is Microsoft.AspNetCore.Routing.Patterns.RoutePatternException or AuthSurfaceAnalysisException or FormatException or InvalidOperationException or ArgumentException)
-        {
-            // A validated structural identity is the lossless representation for accepted
-            // programmatic display text that the framework parser cannot reconstruct.
-        }
-
-        return route + "\u001f" + method;
     }
 
     private sealed class BaselineDocument

@@ -4,6 +4,7 @@ All notable changes to this package will be documented here.
 
 ## [Unreleased]
 
+- Kept collection-level endpoint identity consistent across scan, baseline creation, persistence, reading, and comparison so distinct proven structural identities with colliding readable route display remain readable and comparable.
 
 ## 0.1.0 - Pre-release
 
