@@ -15,6 +15,29 @@ $dependabotEmails = @(
 )
 $githubWebName = 'GitHub'
 $githubWebEmail = 'noreply@github.com'
+$requiredIdeArtifactIgnoreRules = @(
+    @{
+        Pattern = '**/Properties/launchSettings.json'
+        ProbePath = '__repository_hygiene_probe__/Properties/launchSettings.json'
+    }
+)
+
+$rootGitignorePath = Join-Path $Root '.gitignore'
+if (-not (Test-Path -LiteralPath $rootGitignorePath -PathType Leaf)) {
+    throw 'Repository hygiene failed: root .gitignore is missing required IDE-artifact ignore pattern(s).'
+}
+
+$rootGitignoreLines = @(Get-Content -LiteralPath $rootGitignorePath)
+foreach ($rule in $requiredIdeArtifactIgnoreRules) {
+    if ($rootGitignoreLines -cnotcontains $rule.Pattern) {
+        throw "Repository hygiene failed: root .gitignore is missing required IDE-artifact ignore pattern: $($rule.Pattern)."
+    }
+
+    $null = & git -C $Root check-ignore --no-index -q -- $rule.ProbePath 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Repository hygiene failed: root .gitignore pattern '$($rule.Pattern)' does not ignore representative IDE-generated path '$($rule.ProbePath)'."
+    }
+}
 
 function Invoke-Git([string[]] $Arguments) {
     $output = & git -C $Root @Arguments 2>&1

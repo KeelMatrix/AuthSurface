@@ -3,6 +3,8 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $checker = Join-Path $PSScriptRoot 'check-repository-hygiene.ps1'
+$nestedPwsh = Join-Path $PSScriptRoot '../build/Invoke-NestedPwsh.ps1'
+. $nestedPwsh
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('authsurface-hygiene-' + [guid]::NewGuid().ToString('N'))
 
 function Invoke-TempGit([string[]] $Arguments) {
@@ -39,9 +41,39 @@ try {
     Invoke-TempGit @('config', 'user.name', 'KeelMatrix')
     Invoke-TempGit @('config', 'user.email', 'keelmatrix@gmail.com')
     Set-Content -LiteralPath (Join-Path $tempRoot 'README.md') -Value 'A normal review note is allowed.' -Encoding utf8
-    Invoke-TempGit @('add', '--', 'README.md')
+    $ignorePath = Join-Path $tempRoot '.gitignore'
+    $requiredIgnorePattern = '**/Properties/launchSettings.json'
+    Set-Content -LiteralPath $ignorePath -Value $requiredIgnorePattern -Encoding utf8
+    Invoke-TempGit @('add', '--', 'README.md', '.gitignore')
     Invoke-TempGit @('commit', '--quiet', '-m', 'Add documentation', '-m', 'A normal review note remains developer-facing.')
     & $checker -Root $tempRoot | Out-Null
+
+    $ignoreProbePath = '__repository_hygiene_probe__/Properties/launchSettings.json'
+    $null = & git -C $tempRoot check-ignore --no-index -q -- $ignoreProbePath 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Required IDE-artifact ignore rule did not ignore $ignoreProbePath."
+    }
+
+    $originalIgnoreContent = Get-Content -LiteralPath $ignorePath -Raw
+    Set-Content -LiteralPath $ignorePath -Value '# required IDE-artifact rule removed' -Encoding utf8
+    $negativeOutput = Invoke-NestedPwsh -ArgumentList @(
+        '-NoProfile',
+        '-NonInteractive',
+        '-File',
+        $checker,
+        '-Root',
+        $tempRoot
+    ) 2>&1
+    $negativeExitCode = $LASTEXITCODE
+    $negativeMessage = [string]::Join([Environment]::NewLine, @($negativeOutput | ForEach-Object { [string]$_ }))
+    if ($negativeExitCode -eq 0 -or $negativeMessage -notlike "*$requiredIgnorePattern*") {
+        throw "Required IDE-artifact ignore negative control failed. Exit code: $negativeExitCode. Output: $negativeMessage"
+    }
+
+    $ignoreEncoding = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($ignorePath, $originalIgnoreContent, $ignoreEncoding)
+    & $checker -Root $tempRoot | Out-Null
+    Write-Output "IDE-artifact ignore negative control passed: checker exited $negativeExitCode and reported the missing pattern $requiredIgnorePattern."
 
     Set-Content -LiteralPath (Join-Path $tempRoot 'dependabot.txt') -Value 'dependency maintenance' -Encoding utf8
     Invoke-TempGit @('add', '--', 'dependabot.txt')
@@ -124,7 +156,7 @@ try {
     Assert-HygieneFails 'history completeness must be explicit for a shallow checkout'
     Remove-Item -LiteralPath (Join-Path $tempRoot '.git/shallow') -Force
 
-    Write-Output 'Repository hygiene controls passed: ordinary, GitHub web-flow, and Dependabot identities are accepted; shallow history, unapproved trailers, tracked internal-only paths, and prohibited commit-body wording are rejected.'
+    Write-Output 'Repository hygiene controls passed: required IDE-artifact ignore patterns are enforced; ordinary, GitHub web-flow, and Dependabot identities are accepted; shallow history, unapproved trailers, tracked internal-only paths, and prohibited commit-body wording are rejected.'
 }
 finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

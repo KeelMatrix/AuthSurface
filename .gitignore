@@ -3,6 +3,7 @@
 artifacts/
 .vs/
 .idea/
+**/Properties/launchSettings.json
 TestResults/
 *.user
 *.suo
