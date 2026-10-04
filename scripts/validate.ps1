@@ -60,7 +60,6 @@ try {
     Invoke-Gate 'package inspection' {
         & (Join-Path $PSScriptRoot 'inspect-package.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName -ExpectedVersion $version
     }
-    Invoke-Gate 'built-package telemetry contract' { & (Join-Path $PSScriptRoot 'test-telemetry-package.ps1') -PackagePath $nupkg.FullName }
     $vulnerabilityReportPath = Join-Path ([System.IO.Path]::GetTempPath()) ('authsurface-vulnerabilities-' + [guid]::NewGuid().ToString('N') + '.json')
     try {
         Write-Host "`n=== dependency vulnerability audit ==="

@@ -17,7 +17,7 @@ public static class AuthSurfaceVerifier
     internal static AuthSurfaceVerificationResult EvaluatePolicy(AuthSurfaceReport report)
     {
         AuthSurfaceVerificationResult result = new(report.PolicyViolations, usedBaseline: false);
-        AuthSurfaceTelemetryCoordinator.RecordEvaluation(report.Endpoints.Count, result.Violations.Count, usedBaseline: false);
+        AuthSurfaceTelemetryCoordinator.RecordActivationForEvaluation(report.Endpoints.Count);
         return result;
     }
 
@@ -83,7 +83,7 @@ public static class AuthSurfaceVerifier
 
         violations.Sort(CompareViolations);
         AuthSurfaceVerificationResult result = new(violations, usedBaseline: true);
-        AuthSurfaceTelemetryCoordinator.RecordEvaluation(report.Endpoints.Count, result.Violations.Count, usedBaseline: true);
+        AuthSurfaceTelemetryCoordinator.RecordActivationForEvaluation(report.Endpoints.Count);
         return result;
     }
 

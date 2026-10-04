@@ -9,7 +9,7 @@ Report suspected vulnerabilities privately before public disclosure. Do not open
 
 Do not include production credentials or other live sensitive data.
 
-AuthSurface inspects in-process ASP.NET Core endpoint metadata. It does not connect to databases, execute authorization handlers, create principals, mint tokens, or send routes and policy data through telemetry. Baseline files can reveal internal application architecture and should be reviewed as source-controlled security-sensitive data.
+AuthSurface inspects in-process ASP.NET Core endpoint metadata. It requests shared activation telemetry only after a nonempty report is evaluated and passes no route or authorization data to telemetry. It does not connect to databases, execute authorization handlers, create principals, or mint tokens. Baseline files can reveal internal application architecture and should be reviewed as source-controlled security-sensitive data.
 
 ## Supported Versions
 
