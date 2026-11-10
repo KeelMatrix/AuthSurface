@@ -6,7 +6,7 @@
     <Authors>KeelMatrix</Authors>
     <PackageId>KeelMatrix.AuthSurface</PackageId>
     <Description>Tests the runtime ASP.NET Core authorization surface. Detects new, removed, anonymous, unprotected, and policy-changed endpoints through a deterministic baseline.</Description>
-    <PackageTags>aspnetcore;authorization;security-testing;endpoints;minimal-api;integration-testing;endpoint-metadata;testing</PackageTags>
+    <PackageTags>aspnetcore;authorization;security-testing;endpoints;minimal-api;integration-testing;endpoint-metadata;testing;keelmatrix-public-product;keelmatrix-primary</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/KeelMatrix/AuthSurface</RepositoryUrl>

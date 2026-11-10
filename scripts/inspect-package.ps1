@@ -12,6 +12,10 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root = Split-Path -Parent $PSScriptRoot
 $projectReadmePath = Join-Path $root 'src/KeelMatrix.AuthSurface/README.md'
+$metadataArchives = @($PackagePath)
+if ($SymbolPackagePath) { $metadataArchives += $SymbolPackagePath }
+& (Join-Path $PSScriptRoot 'check-website-metadata.ps1') -PackagePath $metadataArchives
+if ($LASTEXITCODE -ne 0) { throw 'Website package metadata inspection failed.' }
 
 function Get-PngDimensions([System.IO.Stream] $Stream) {
     $header = New-Object byte[] 24

@@ -17,6 +17,8 @@ pwsh ./scripts/validate.ps1 -Configuration Release
 
 Use focused `dotnet test` or `dotnet build` commands while developing, then run the validation script once after the implementation is final. The script performs controlled restore, static checks, Release build, tests, package inspection, vulnerability checks, and package-consumer smoke.
 
+For package classification changes, run `pwsh ./scripts/check-website-metadata.ps1` and `pwsh ./scripts/test-website-metadata.ps1` first. The root `keelmatrix.website.json` owns classification; see [package discovery metadata](docs/package-metadata.md) for source and archive validation.
+
 ## Invariants
 
 - The scanner reads completed runtime `EndpointDataSource` metadata and never uses API Explorer or action descriptors as its source of truth.

@@ -31,6 +31,7 @@ function Invoke-Gate([string] $Name, [scriptblock] $Action) {
 
 Push-Location $root
 try {
+    Invoke-Gate 'website package metadata' { & (Join-Path $PSScriptRoot 'check-website-metadata.ps1') }
     Invoke-Gate 'release workflow contract' { & (Join-Path $PSScriptRoot 'validate-release-workflow.ps1') }
     Invoke-Gate 'release workflow validator mutation tests' { & (Join-Path $PSScriptRoot 'test-release-workflow.ps1') }
     Invoke-Gate 'action pin request regression tests' { & (Join-Path $PSScriptRoot 'test-action-pin-requests.ps1') }
@@ -39,6 +40,7 @@ try {
         & (Join-Path $PSScriptRoot 'check-release-contract.ps1') -Mode Main -Version $version
     }
 
+    Invoke-Gate 'website package metadata regression tests' { & (Join-Path $PSScriptRoot 'test-website-metadata.ps1') }
     Invoke-Gate 'controlled restore' { dotnet restore $solution --configfile (Join-Path $root 'NuGet.config') --force-evaluate }
     Invoke-Gate 'format whitespace' { dotnet format whitespace $solution --verify-no-changes --no-restore }
     Invoke-Gate 'format analyzers' { dotnet format analyzers $library --diagnostics RS0016,RS0017,RS0025,RS0037 --verify-no-changes --no-restore }
