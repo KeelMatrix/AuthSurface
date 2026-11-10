@@ -202,17 +202,23 @@ elseif ($env:GITHUB_ACTIONS -eq 'true') {
 
 function Get-GitHubResponse([string] $Path, [switch] $AllowNotFound) {
     try {
-        $response = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 -MaximumRedirection 0 -Headers $githubHeaders -Uri "https://api.github.com/$Path"
-        if ($null -eq $response) { throw 'Empty GitHub response.' }
-        return $response
+        $raw = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 -MaximumRedirection 0 -Headers $githubHeaders -Uri "https://api.github.com/$Path"
     }
     catch {
         $status = $_.Exception.Response.StatusCode
-        if ($AllowNotFound -and $null -ne $status -and [int]$status -eq 404) { return $null }
+        if ($AllowNotFound -and $null -ne $status -and [int]$status -eq 404) {
+            return [pscustomobject]@{ NotFound = $true; Body = $null }
+        }
         # Do not echo provider bodies, request headers, or exception details containing credentials.
         $reason = if ($null -ne $status) { "HTTP $([int]$status)" } else { 'transport or response failure' }
         throw "GitHub action verification failed: $reason."
     }
+
+    # Validate before function output can enumerate a collection or erase an empty result.
+    if ($null -eq $raw -or ($raw -isnot [pscustomobject] -and $raw -isnot [System.Collections.IDictionary])) {
+        throw 'GitHub action verification failed: expected one response object.'
+    }
+    return [pscustomobject]@{ NotFound = $false; Body = $raw }
 }
 
 function Assert-CommitObject([string] $Action) {
@@ -220,8 +226,9 @@ function Assert-CommitObject([string] $Action) {
     $repository = $parts[0]
     $sha = $parts[1]
     try {
-        $response = Get-GitHubResponse "repos/$repository/git/commits/$sha"
-        if ($null -eq $response -or $response -is [array] -or $response.sha -isnot [string] -or $response.sha -cne $sha) {
+        $result = Get-GitHubResponse "repos/$repository/git/commits/$sha"
+        $response = $result.Body
+        if ($response.sha -isnot [string] -or $response.sha -cne $sha) {
             throw "Action pin did not resolve to the requested commit object: $Action."
         }
     }
@@ -242,9 +249,11 @@ function Get-ActionMetadata([string] $Action) {
     $metadata = $null
     foreach ($metadataFile in @('action.yml', 'action.yaml')) {
         try {
-            $response = Get-GitHubResponse "repos/$repository/contents/${metadataFile}?ref=$sha" -AllowNotFound
-            if ($null -eq $response) { continue }
-            if ($response -is [array] -or $response.type -ne 'file' -or $response.encoding -ne 'base64' -or $response.content -isnot [string]) {
+            $result = Get-GitHubResponse "repos/$repository/contents/${metadataFile}?ref=$sha" -AllowNotFound:($metadataFile -eq 'action.yml')
+            if ($result.NotFound) { continue }
+            $response = $result.Body
+            if ($response.type -isnot [string] -or $response.type -ne 'file' -or
+                $response.encoding -isnot [string] -or $response.encoding -ne 'base64' -or $response.content -isnot [string]) {
                 throw 'Invalid metadata response.'
             }
             $metadata = [Text.UTF8Encoding]::new($false, $true).GetString([Convert]::FromBase64String($response.content))

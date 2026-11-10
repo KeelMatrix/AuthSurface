@@ -7,6 +7,7 @@ All notable changes to this package will be documented here.
 ### Fixed
 
 - Uses the existing read-only GitHub Actions token for workflow action commit and metadata verification, avoiding the shared anonymous API quota while retaining fail-closed checks.
+- Rejects malformed workflow verification responses before PowerShell can enumerate them; only an actual `action.yml` HTTP 404 permits the `action.yaml` fallback.
 
 ## [0.1.0] - 2026-10-04
 

@@ -6,8 +6,19 @@ entry in `scripts/release-action-pins.txt`, and the allowlist may not contain
 unused or duplicate entries. `scripts/validate-release-workflow.ps1` checks all
 workflow files and checks each SHA through GitHub's Git commit API to confirm
 that it is a commit object rather than an annotated tag object. It reads
-`action.yml` (or `action.yaml` only after a 404) through the Contents API at that
-same SHA and requires a supported runtime: Node 24 or newer, composite, or Docker.
+`action.yml` (or `action.yaml` only after an actual HTTP 404) through the Contents
+API at that same SHA and requires a supported runtime: Node 24 or newer,
+composite, or Docker.
+
+A successful REST result must be one non-null object. The validator checks the
+raw value before function output can enumerate it: arrays of any size or depth,
+null, and scalars reject. An internal success/not-found envelope keeps a real
+HTTP 404 separate from every successful response; provider properties cannot
+select that outcome. Only an `action.yml` HTTP 404 permits one `action.yaml`
+request. A malformed successful response, fallback 404, or other error stops
+validation without another filename or request. Commit `sha` must be the exact
+case-sensitive requested string. Metadata `type`, `encoding`, and `content`
+must be strings describing a file with base64 content that decodes as strict UTF-8.
 
 Both API lookups use `GITHUB_TOKEN` when supplied. CI passes its existing
 `contents: read` workflow token to the direct pin check and complete validation;
@@ -64,8 +75,15 @@ pwsh -NoProfile -File .\scripts\test-action-pin-requests.ps1
 The mutation check must reject an unpinned action, a tag name, an annotated tag
 object SHA, a workflow action absent from the allowlist, missing CI token wiring,
 and ignored verification failures. The deterministic request tests exercise all
-pins against authenticated success, anonymous quota exhaustion, provider and
-response failures, metadata fallback, runtime rejection, and nonzero exits from
-direct validation, mutation tests, and the full validation entry point. The CI
-workflow runs both the validator and the complete repository validation on
+pins and all three response boundaries (commit, `action.yml`, and `action.yaml`)
+against ordinary object and hashtable success, 108 null/empty/single/multiple/
+nested-array cases, scalar and required-field failures, and true-404 valid and
+invalid fallback. They assert reached targets and exact request sequences,
+authentication and request bounds, anonymous quota exhaustion, provider errors,
+redacted diagnostics, content decoding, and supported/deprecated runtimes.
+Child processes prove nonzero exits from direct validation, mutation tests, and
+the full validation entry point before controlled restore for HTTP 403, commit
+singleton arrays, malformed successful `action.yml`, and singleton fallback.
+An unexpectedly returning child exits zero so it cannot manufacture rejection.
+The CI workflow runs both the validator and the complete repository validation on
 Windows, Linux, and macOS. The release workflow remains tag-triggered only.
