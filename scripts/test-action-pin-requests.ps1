@@ -203,7 +203,7 @@ try {
             'yml-singleton' { $failure = 'singleton'; $failureKind = 'action.yml' }
             'fallback-singleton' { $failure = 'singleton'; $failureKind = 'action.yaml' }
         }
-        $nativeDotnet = (Get-Command dotnet -CommandType Application).Source
+        $nativeDotnet = (Get-Command dotnet -CommandType Application | Select-Object -First 1).Source
         function dotnet {
             if ($args[0] -eq 'restore') { Write-Host 'FORBIDDEN_RESTORE'; exit 86 }
             & $nativeDotnet @args

@@ -27,6 +27,8 @@ $validNuspec = @"
 <projectUrl>$url</projectUrl><repository type="git" url="$url" /></metadata></package>
 "@
 $caseCount = 0
+$originalPath = $env:PATH
+$originalNative = $env:AUTHSURFACE_METADATA_NATIVE
 
 function Reset-Fixture {
     Set-Content -LiteralPath $manifestPath -Value $validManifest -Encoding utf8
@@ -63,6 +65,21 @@ try {
     New-Item -ItemType Directory -Path (Split-Path -Parent $projectPath) -Force | Out-Null
     & git -C $testRoot init --quiet
     if ($LASTEXITCODE -ne 0) { throw 'Metadata fixture git initialization failed.' }
+    # Force multiple application matches, as on hosts with several dotnet paths.
+    $env:AUTHSURFACE_METADATA_NATIVE = (Get-Command dotnet -CommandType Application | Select-Object -First 1).Source
+    $shimDirectory = Join-Path $testRoot 'dotnet-path'
+    New-Item -ItemType Directory -Path $shimDirectory -Force | Out-Null
+    if ($IsWindows) {
+        Set-Content -LiteralPath (Join-Path $shimDirectory 'dotnet.cmd') -Value '@"%AUTHSURFACE_METADATA_NATIVE%" %*' -Encoding ascii
+    }
+    else {
+        $shimPath = Join-Path $shimDirectory 'dotnet'
+        [IO.File]::WriteAllText($shimPath, "#!/bin/sh`n" + 'exec "$AUTHSURFACE_METADATA_NATIVE" "$@"' + "`n")
+        & chmod +x $shimPath
+        if ($LASTEXITCODE -ne 0) { throw 'Metadata fixture executable setup failed.' }
+    }
+    $env:PATH = $shimDirectory + [IO.Path]::PathSeparator + $originalPath
+    if (@(Get-Command dotnet -CommandType Application).Count -lt 2) { throw 'Metadata fixture did not create multiple dotnet application matches.' }
     Reset-Fixture
     & $checker -Root $testRoot
 
@@ -180,7 +197,7 @@ try {
         Set-Content -LiteralPath $childPath -Value $child
         $oldDotnet = $env:AUTHSURFACE_TEST_DOTNET
         try {
-            $env:AUTHSURFACE_TEST_DOTNET = (Get-Command dotnet -CommandType Application).Source
+            $env:AUTHSURFACE_TEST_DOTNET = (Get-Command dotnet -CommandType Application | Select-Object -First 1).Source
             $output = Invoke-NestedPwsh -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $childPath) 2>&1
             $exitCode = $LASTEXITCODE
         }
@@ -193,6 +210,8 @@ try {
     Write-Output "Website metadata regression tests passed: $caseCount negative cases; evaluated inherited Release properties, nonpackable exclusion, valid source and both archive types, and fatal caller propagation."
 }
 finally {
+    $env:PATH = $originalPath
+    $env:AUTHSURFACE_METADATA_NATIVE = $originalNative
     $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
     if (-not $resolvedTestRoot.StartsWith([IO.Path]::GetFullPath($scratch).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Metadata fixture cleanup is outside the temporary directory.'

@@ -46,3 +46,6 @@ archive types, then mutate schema shapes, identities, classifications, tags,
 primary counts, and URLs. Child-process controls require exit 1 from the direct
 checker, package inspector, and full validation entry point. A successful return
 or reaching the defensive restore sentinel fails the test.
+The fixtures also place a forwarding executable on `PATH` alongside the installed
+`dotnet`. Child wrappers select the first application, preserving ordinary command
+resolution when several executable paths match.
