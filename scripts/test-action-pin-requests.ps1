@@ -2,7 +2,7 @@
 param(
     [ValidateSet('', 'direct', 'mutations', 'full')]
     [string] $ChildCaller = '',
-    [ValidateSet('403', 'commit-singleton', 'yml-empty', 'fallback-singleton')]
+    [ValidateSet('403', 'commit-singleton', 'yml-empty', 'yml-singleton', 'fallback-singleton')]
     [string] $ChildCase = '403'
 )
 
@@ -22,31 +22,48 @@ $providerBody = 'synthetic-private-provider-body'
 $shapeCases = @('null', 'empty-array', 'null-array', 'two-null-array', 'singleton', 'multiple',
     'null-first', 'null-last', 'nested-empty', 'nested-singleton', 'nested-null', 'nested-multiple')
 
-# The HTTP substitute must preserve each raw shape, just as Invoke-RestMethod does.
-function Get-TestValue([string] $Case, $Object) {
+# Preserve the real JSON parser's wrappers as well as array cardinality and nulls.
+function Get-TestJson([string] $Case, [string] $ObjectJson) {
     switch ($Case) {
-        'null' { return $null }
-        'empty-array' { return ,@() }
-        'null-array' { return ,@($null) }
-        'two-null-array' { return ,@($null, $null) }
-        'singleton' { return ,@($Object) }
-        'multiple' { return ,@($Object, $Object) }
-        'null-first' { return ,@($null, $Object) }
-        'null-last' { return ,@($Object, $null) }
-        'nested-empty' { return ,@(,@()) }
-        'nested-singleton' { return ,@(,@($Object)) }
-        'nested-null' { return ,@(,@($null)) }
-        'nested-multiple' { return ,@(@($Object), @($Object)) }
-        'string' { return 'not an object' }
-        'empty-string' { return '' }
-        'number' { return 1 }
-        'boolean' { return $true }
-        'false' { return $false }
-        'empty-object' { return @{} }
-        'provider404' { return @{ message = 'Not Found'; status = 404 } }
-        'envelope' { return @{ NotFound = $true; Body = $Object } }
+        'null' { return 'null' }
+        'empty-array' { return '[]' }
+        'null-array' { return '[null]' }
+        'two-null-array' { return '[null,null]' }
+        'singleton' { return "[$ObjectJson]" }
+        'multiple' { return "[$ObjectJson,$ObjectJson]" }
+        'null-first' { return "[null,$ObjectJson]" }
+        'null-last' { return "[$ObjectJson,null]" }
+        'nested-empty' { return '[[]]' }
+        'nested-singleton' { return "[[$ObjectJson]]" }
+        'nested-null' { return '[[null]]' }
+        'nested-multiple' { return "[[$ObjectJson],[$ObjectJson]]" }
+        'string' { return '"not an object"' }
+        'empty-string' { return '""' }
+        'number' { return '1' }
+        'boolean' { return 'true' }
+        'false' { return 'false' }
+        'empty-object' { return '{}' }
+        'provider404' { return '{"message":"Not Found","status":404}' }
+        'envelope' { return '{"NotFound":true,"Body":' + $ObjectJson + '}' }
         default { throw "Unknown response case: $Case" }
     }
+}
+
+function Read-TestJson([string] $Json) {
+    $raw = Microsoft.PowerShell.Utility\ConvertFrom-Json -InputObject $Json -NoEnumerate -AsHashtable:($objectKind -eq 'Hashtable')
+    return ,$raw
+}
+
+function Assert-ParserSeam {
+    $value = Read-TestJson '{"sha":"synthetic-sha"}'
+    $array = Read-TestJson '[{"sha":"synthetic-sha"}]'
+    $validObject = if ($objectKind -eq 'Hashtable') { $value -is [System.Collections.IDictionary] }
+    else { $value -is [System.Management.Automation.PSCustomObject] }
+    if (-not $validObject -or $value -is [array] -or $value.sha -cne 'synthetic-sha' -or
+        $array -isnot [array] -or $array -isnot [pscustomobject] -or $array.Count -ne 1) {
+        throw "JSON parser seam did not preserve native object/array wrappers ($objectKind)."
+    }
+    Write-Output "Parser seam ($objectKind): object=True; parsed array=True; shorthand=True."
 }
 
 function Throw-HttpFailure([int] $Status) {
@@ -96,7 +113,10 @@ function Invoke-RestMethod {
     if ($selected) {
         if ($failureField) {
             if ($failure -eq 'missing') { $body.Remove($failureField) }
-            else { $body[$failureField] = Get-TestValue $failure $body[$failureField] }
+            else {
+                $fieldJson = ConvertTo-Json -InputObject $body[$failureField] -Compress
+                $body[$failureField] = Read-TestJson (Get-TestJson $failure $fieldJson)
+            }
         }
         else {
             switch ($failure) {
@@ -109,12 +129,18 @@ function Invoke-RestMethod {
             }
         }
     }
-    if ($objectKind -eq 'PSCustomObject') { $body = [pscustomobject]$body }
-    if ($selected -and -not $failureField -and $failure -in ($shapeCases + @('string', 'empty-string', 'number', 'boolean', 'false', 'empty-object', 'provider404', 'envelope'))) {
-        $raw = Get-TestValue $failure $body
-        return ,$raw
+    if ($selected -and $failure -eq 'extra-envelope-properties') {
+        $body.NotFound = $true
+        $body.Body = $null
     }
-    return $body
+    # Retain compatibility with a caller supplying an ordinary, unparsed dictionary.
+    if ($objectKind -eq 'ManualHashtable') { return $body }
+    $json = ConvertTo-Json -InputObject $body -Depth 20 -Compress
+    if ($selected -and -not $failureField -and $failure -in ($shapeCases + @('string', 'empty-string', 'number', 'boolean', 'false', 'empty-object', 'provider404', 'envelope'))) {
+        $json = Get-TestJson $failure $json
+    }
+    $raw = Read-TestJson $json
+    return ,$raw
 }
 
 function Assert-SafeOutput([string] $Output) {
@@ -145,10 +171,22 @@ function Assert-Boundary([string] $Pin, [string] $Kind, [string] $Case, [string]
     $requests.Clear()
     $requestViolations.Clear()
     $rejected = $false
-    try { & $validator | Out-Null }
-    catch { Assert-SafeOutput ($_ | Out-String); $rejected = $true }
+    $output = [System.Collections.Generic.List[string]]::new()
+    $diagnostic = ''
+    try { & $validator | ForEach-Object { $output.Add([string]$_) } }
+    catch { $diagnostic = $_.Exception.Message; $rejected = $true }
+    Assert-SafeOutput (($output -join "`n") + $diagnostic)
+    if ($rejected -and ($output -match 'Workflow action pin contract passed:')) { throw 'Rejected verification printed success.' }
     Assert-Sequence @(Get-ExpectedSequence $Pin $Kind -Complete:$Accept)
     if ($rejected -eq $Accept.IsPresent) { throw "Unexpected outcome: $Pin $Kind $Field $Case (rejected=$rejected)." }
+    if (-not $Accept -and -not $Field -and $Case -in $shapeCases) {
+        $expectedDiagnostic = if ($Kind -eq 'commit') {
+            "Could not verify pinned action commit through GitHub: $Pin. GitHub action verification failed: expected one response object."
+        }
+        else { "Could not read pinned action metadata for $Pin. Verification was unavailable or invalid." }
+        if ($diagnostic -cne $expectedDiagnostic) { throw "Unexpected raw-shape diagnostic ($Case): $diagnostic" }
+    }
+    if ($Accept -and -not ($output -match 'Workflow action pin contract passed:')) { throw 'Valid verification did not print success.' }
 }
 
 $originalToken = $env:GITHUB_TOKEN
@@ -162,7 +200,14 @@ try {
             '403' { $failure = '403'; $failureKind = 'commit' }
             'commit-singleton' { $failure = 'singleton'; $failureKind = 'commit' }
             'yml-empty' { $failure = 'empty-array'; $failureKind = 'action.yml' }
+            'yml-singleton' { $failure = 'singleton'; $failureKind = 'action.yml' }
             'fallback-singleton' { $failure = 'singleton'; $failureKind = 'action.yaml' }
+        }
+        $nativeDotnet = (Get-Command dotnet -CommandType Application).Source
+        function dotnet {
+            if ($args[0] -eq 'restore') { Write-Host 'FORBIDDEN_RESTORE'; exit 86 }
+            & $nativeDotnet @args
+            $global:LASTEXITCODE = $LASTEXITCODE
         }
         switch ($ChildCaller) {
             'direct' { & $validator }
@@ -173,42 +218,47 @@ try {
         exit 0
     }
 
+    $objectKind = 'ManualHashtable'
+    Assert-Boundary '' '' '' -Accept
+    $shapeCount = 0
     foreach ($representation in @('PSCustomObject', 'Hashtable')) {
         $objectKind = $representation
+        Assert-ParserSeam
         Assert-Boundary '' '' '' -Accept
         foreach ($pin in $pins) { Assert-Boundary $pin 'action.yml' '404' -Accept }
-    }
-    $objectKind = 'PSCustomObject'
-    $shapeCount = 0
-    foreach ($pin in $pins) {
-        foreach ($kind in @('commit', 'action.yml', 'action.yaml')) {
-            foreach ($case in $shapeCases) {
-                Assert-Boundary $pin $kind $case
-                $shapeCount++
-            }
-            foreach ($case in @('string', 'empty-string', 'number', 'boolean', 'false', 'empty-object', 'provider404', 'envelope',
-                    '302', '401', '403', '404', '429', '500', 'timeout', 'transport', 'message404')) {
-                # A real action.yml 404 is the sole successful fallback control.
-                Assert-Boundary $pin $kind $case -Accept:($kind -eq 'action.yml' -and $case -eq '404')
-            }
-            $fields = if ($kind -eq 'commit') { @('sha') } else { @('type', 'encoding', 'content') }
-            foreach ($field in $fields) {
-                foreach ($case in ($shapeCases + @('missing', 'empty-string', 'string', 'number', 'boolean', 'empty-object'))) {
-                    Assert-Boundary $pin $kind $case $field
-                }
-            }
-            if ($kind -eq 'commit') {
-                foreach ($case in @('noncommit', 'wrong-case-sha')) { Assert-Boundary $pin $kind $case }
-            }
-            else {
-                foreach ($case in @('directory', 'encoding', 'base64', 'utf8', 'empty', 'missing-runtime', 'node20', 'node23')) {
+        foreach ($pin in $pins) {
+            foreach ($kind in @('commit', 'action.yml', 'action.yaml')) {
+                Assert-Boundary $pin $kind '' -Accept
+                Assert-Boundary $pin $kind 'extra-envelope-properties' -Accept
+                foreach ($case in $shapeCases) {
                     Assert-Boundary $pin $kind $case
+                    $shapeCount++
                 }
-                foreach ($case in @('node25', 'composite', 'docker')) { Assert-Boundary $pin $kind $case -Accept }
+                foreach ($case in @('string', 'empty-string', 'number', 'boolean', 'false', 'empty-object', 'provider404', 'envelope',
+                        '302', '401', '403', '404', '429', '500', 'timeout', 'transport', 'message404')) {
+                    # A real action.yml 404 is the sole successful fallback control.
+                    Assert-Boundary $pin $kind $case -Accept:($kind -eq 'action.yml' -and $case -eq '404')
+                }
+                $fields = if ($kind -eq 'commit') { @('sha') } else { @('type', 'encoding', 'content') }
+                foreach ($field in $fields) {
+                    foreach ($case in ($shapeCases + @('missing', 'empty-string', 'string', 'number', 'boolean', 'empty-object'))) {
+                        Assert-Boundary $pin $kind $case $field
+                    }
+                }
+                if ($kind -eq 'commit') {
+                    foreach ($case in @('noncommit', 'wrong-case-sha')) { Assert-Boundary $pin $kind $case }
+                }
+                else {
+                    foreach ($case in @('directory', 'encoding', 'base64', 'utf8', 'empty', 'missing-runtime', 'node20', 'node23')) {
+                        Assert-Boundary $pin $kind $case
+                    }
+                    foreach ($case in @('node25', 'composite', 'docker')) { Assert-Boundary $pin $kind $case -Accept }
+                }
             }
         }
     }
-    if ($shapeCount -ne 108) { throw 'The raw-shape matrix did not cover every pin and endpoint.' }
+    if ($shapeCount -ne 216) { throw 'The raw-shape matrix did not cover both representations at every pin and endpoint.' }
+    $objectKind = 'PSCustomObject'
 
     $failure = ''
     $failureField = ''
@@ -231,22 +281,23 @@ try {
 
     . (Join-Path $sourceRoot 'build/Invoke-NestedPwsh.ps1')
     foreach ($caller in @('direct', 'mutations', 'full')) {
-        foreach ($case in @('403', 'commit-singleton', 'yml-empty', 'fallback-singleton')) {
+        foreach ($case in @('403', 'commit-singleton', 'yml-empty', 'yml-singleton', 'fallback-singleton')) {
             $output = Invoke-NestedPwsh -NoProfile -File $PSCommandPath -ChildCaller $caller -ChildCase $case 2>&1 | Out-String
             $exitCode = $LASTEXITCODE
             Assert-SafeOutput $output
-            $kind = switch ($case) { 'yml-empty' { 'action.yml' }; 'fallback-singleton' { 'action.yaml' }; default { 'commit' } }
+            $kind = switch ($case) { 'yml-empty' { 'action.yml' }; 'yml-singleton' { 'action.yml' }; 'fallback-singleton' { 'action.yaml' }; default { 'commit' } }
             $diagnostic = if ($kind -eq 'commit') { 'Could not verify pinned action commit' } else { 'Could not read pinned action metadata' }
             $expected = @(Get-ExpectedSequence $pins[0] $kind)
             $actual = @([regex]::Matches($output, '(?m)^Reached request: ([^\r\n]+)\r?$') | ForEach-Object { $_.Groups[1].Value })
-            if ($exitCode -eq 0 -or $output -notlike "*$diagnostic*" -or $output -like '*controlled restore*' -or
+            if ($exitCode -ne 1 -or $output -notlike "*$diagnostic*" -or $output -match 'controlled restore|FORBIDDEN_RESTORE|Workflow action pin contract passed:' -or
                 ($actual -join "`n") -cne ($expected -join "`n")) {
                 throw "Verification failure did not propagate safely through $caller ($case)."
             }
+            Write-Output "Caller rejection ($caller/$case): exit=$exitCode; requests=$($actual.Count); before restore."
         }
     }
     $global:LASTEXITCODE = 0
-    Write-Output 'Action pin request tests passed: 108 raw-shape cases across all pins and endpoints, object/field/content/runtime controls, actual-404-only fallback, request sequences, authentication/redaction, workflow mutations, and 12 caller propagation cases.'
+    Write-Output 'Action pin request tests passed: 216 parser-backed raw-shape cases across both representations, all pins and endpoints, object/field/content/runtime controls, actual-404-only fallback, request sequences, authentication/redaction, workflow mutations, and 15 caller propagation cases (exit 1, before restore).'
 }
 finally {
     $env:GITHUB_TOKEN = $originalToken

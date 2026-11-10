@@ -215,7 +215,8 @@ function Get-GitHubResponse([string] $Path, [switch] $AllowNotFound) {
     }
 
     # Validate before function output can enumerate a collection or erase an empty result.
-    if ($null -eq $raw -or ($raw -isnot [pscustomobject] -and $raw -isnot [System.Collections.IDictionary])) {
+    if ($null -eq $raw -or $raw -is [array] -or
+        ($raw -isnot [System.Management.Automation.PSCustomObject] -and $raw -isnot [System.Collections.IDictionary])) {
         throw 'GitHub action verification failed: expected one response object.'
     }
     return [pscustomobject]@{ NotFound = $false; Body = $raw }

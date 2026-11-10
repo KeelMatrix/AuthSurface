@@ -10,9 +10,12 @@ that it is a commit object rather than an annotated tag object. It reads
 API at that same SHA and requires a supported runtime: Node 24 or newer,
 composite, or Docker.
 
-A successful REST result must be one non-null object. The validator checks the
-raw value before function output can enumerate it: arrays of any size or depth,
-null, and scalars reject. An internal success/not-found envelope keeps a real
+A successful REST result must be one non-null, non-array custom object or
+dictionary. The validator checks the raw value before function output or member
+access can enumerate it. It explicitly excludes arrays and recognizes the actual
+custom-object type, because PowerShell's `[pscustomobject]` type test also matches
+parser-wrapped arrays and scalars. Arrays of any size or depth, null, and scalars
+reject. An internal success/not-found envelope keeps a real
 HTTP 404 separate from every successful response; provider properties cannot
 select that outcome. Only an `action.yml` HTTP 404 permits one `action.yaml`
 request. A malformed successful response, fallback 404, or other error stops
@@ -76,14 +79,19 @@ The mutation check must reject an unpinned action, a tag name, an annotated tag
 object SHA, a workflow action absent from the allowlist, missing CI token wiring,
 and ignored verification failures. The deterministic request tests exercise all
 pins and all three response boundaries (commit, `action.yml`, and `action.yaml`)
-against ordinary object and hashtable success, 108 null/empty/single/multiple/
-nested-array cases, scalar and required-field failures, and true-404 valid and
-invalid fallback. They assert reached targets and exact request sequences,
+against preserved JSON parsing in both custom-object and hashtable representations,
+including a fixture check that parsed arrays match both `[array]` and the
+`[pscustomobject]` shorthand. They exercise 216 null/empty/single/multiple/nested-array
+cases, valid objects (including inert provider envelope properties), ordinary
+unparsed dictionary success, scalar and required-field failures, and true-404
+valid and invalid fallback. They assert reached targets and exact request sequences,
 authentication and request bounds, anonymous quota exhaustion, provider errors,
 redacted diagnostics, content decoding, and supported/deprecated runtimes.
-Child processes prove nonzero exits from direct validation, mutation tests, and
+Fifteen child cases prove exit 1 from direct validation, mutation tests, and
 the full validation entry point before controlled restore for HTTP 403, commit
-singleton arrays, malformed successful `action.yml`, and singleton fallback.
-An unexpectedly returning child exits zero so it cannot manufacture rejection.
+singleton arrays, empty-array and singleton successful `action.yml`, and singleton
+fallback. An unexpectedly returning child exits zero; a defensive restore sentinel
+exits 86. Both fail the harness, as do missing diagnostics, changed request prefixes,
+private output, or a success message on rejection.
 The CI workflow runs both the validator and the complete repository validation on
 Windows, Linux, and macOS. The release workflow remains tag-triggered only.
