@@ -40,6 +40,8 @@ jobs:
       - name: Validate workflow action pins
         shell: pwsh
         timeout-minutes: 10
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: pwsh -NoProfile -File ./scripts/validate-release-workflow.ps1
 
       - name: Verify hidden child PowerShell launches
@@ -53,4 +55,6 @@ jobs:
       - name: Run complete repository validation
         shell: pwsh
         timeout-minutes: 35
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: pwsh -NoProfile -File ./scripts/validate.ps1 -Configuration Release

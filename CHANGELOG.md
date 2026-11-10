@@ -4,6 +4,10 @@ All notable changes to this package will be documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Uses the existing read-only GitHub Actions token for workflow action commit and metadata verification, avoiding the shared anonymous API quota while retaining fail-closed checks.
+
 ## [0.1.0] - 2026-10-04
 
 ### Added

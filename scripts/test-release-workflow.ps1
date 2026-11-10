@@ -107,6 +107,25 @@ Assert-Rejected 'workflow action missing from allowlist' {
     Set-Content -LiteralPath $ciPath -Value $ci -Encoding utf8
 }
 
+foreach ($scriptName in @('validate-release-workflow.ps1', 'validate.ps1')) {
+    Assert-Rejected "missing CI token for $scriptName" {
+        param($testRoot)
+        $ciPath = Join-Path $testRoot '.github/workflows/ci.yml'
+        $ci = Get-Content -LiteralPath $ciPath -Raw
+        $ci = [regex]::Replace($ci,
+            "(?m)^        env:\r?\n          GITHUB_TOKEN: [^\r\n]+\r?\n(?=        run: pwsh -NoProfile -File ./scripts/$([regex]::Escape($scriptName))(?:\s|$))", '')
+        Set-Content -LiteralPath $ciPath -Value $ci -Encoding utf8
+    }
+    Assert-Rejected "ignored CI failure for $scriptName" {
+        param($testRoot)
+        $ciPath = Join-Path $testRoot '.github/workflows/ci.yml'
+        $ci = Get-Content -LiteralPath $ciPath -Raw
+        $ci = [regex]::Replace($ci,
+            "(?m)^(        run: pwsh -NoProfile -File ./scripts/$([regex]::Escape($scriptName))(?:[^\r\n]*))$", "        continue-on-error: true`n`$1")
+        Set-Content -LiteralPath $ciPath -Value $ci -Encoding utf8
+    }
+}
+
 Assert-Rejected 'release job timeout missing' {
     param($testRoot)
     $releasePath = Join-Path $testRoot '.github/workflows/release.yml'

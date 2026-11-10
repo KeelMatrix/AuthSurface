@@ -71,6 +71,16 @@ foreach ($requiredCiText in @(
     }
 }
 
+foreach ($scriptName in @('validate-release-workflow.ps1', 'validate.ps1')) {
+    $steps = @([regex]::Split($ciWorkflow, '(?m)(?=^      - )') | Where-Object {
+        $_ -match "(?m)^        run: pwsh -NoProfile -File ./scripts/$([regex]::Escape($scriptName))(?:\s|$)"
+    })
+    if ($steps.Count -ne 1 -or $steps[0] -notmatch '(?m)^        env:\r?\n          GITHUB_TOKEN: \$\{\{ github.token \}\}\s*$' -or
+        $steps[0] -match '(?m)^        continue-on-error:') {
+        throw "CI must pass its read-only GitHub token to $scriptName and propagate verification failures."
+    }
+}
+
 if ($releaseWorkflow -notmatch '(?ms)^on:\s*\r?\n\s+push:\s*\r?\n\s+tags:') {
     throw 'Release workflow must use a tag-only push trigger.'
 }
@@ -178,11 +188,31 @@ if ($buildIndex -lt 0 -or $testIndex -lt $buildIndex -or $packIndex -lt $testInd
     throw 'Release workflow must build and test before packing.'
 }
 
-function Get-GitHubResponse([string] $Uri) {
-    return Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 -Headers @{
-        'User-Agent' = 'KeelMatrix-AuthSurface-Validator'
-        Accept = 'application/vnd.github+json'
-    } -Uri $Uri
+$githubHeaders = @{
+    'User-Agent' = 'KeelMatrix-AuthSurface-Validator'
+    Accept = 'application/vnd.github+json'
+    'X-GitHub-Api-Version' = '2022-11-28'
+}
+if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+    $githubHeaders.Authorization = "Bearer $env:GITHUB_TOKEN"
+}
+elseif ($env:GITHUB_ACTIONS -eq 'true') {
+    throw 'Workflow action verification requires GITHUB_TOKEN in GitHub Actions.'
+}
+
+function Get-GitHubResponse([string] $Path, [switch] $AllowNotFound) {
+    try {
+        $response = Invoke-RestMethod -UseBasicParsing -TimeoutSec 15 -MaximumRedirection 0 -Headers $githubHeaders -Uri "https://api.github.com/$Path"
+        if ($null -eq $response) { throw 'Empty GitHub response.' }
+        return $response
+    }
+    catch {
+        $status = $_.Exception.Response.StatusCode
+        if ($AllowNotFound -and $null -ne $status -and [int]$status -eq 404) { return $null }
+        # Do not echo provider bodies, request headers, or exception details containing credentials.
+        $reason = if ($null -ne $status) { "HTTP $([int]$status)" } else { 'transport or response failure' }
+        throw "GitHub action verification failed: $reason."
+    }
 }
 
 function Assert-CommitObject([string] $Action) {
@@ -190,8 +220,8 @@ function Assert-CommitObject([string] $Action) {
     $repository = $parts[0]
     $sha = $parts[1]
     try {
-        $response = Get-GitHubResponse "https://api.github.com/repos/$repository/commits/$sha"
-        if ($null -eq $response -or $response.sha -ne $sha) {
+        $response = Get-GitHubResponse "repos/$repository/git/commits/$sha"
+        if ($null -eq $response -or $response -is [array] -or $response.sha -isnot [string] -or $response.sha -cne $sha) {
             throw "Action pin did not resolve to the requested commit object: $Action."
         }
     }
@@ -200,7 +230,7 @@ function Assert-CommitObject([string] $Action) {
     }
 }
 
- $actionMetadataCache = @{}
+$actionMetadataCache = @{}
 function Get-ActionMetadata([string] $Action) {
     if ($actionMetadataCache.ContainsKey($Action)) {
         return $actionMetadataCache[$Action]
@@ -211,18 +241,17 @@ function Get-ActionMetadata([string] $Action) {
     $sha = $parts[1]
     $metadata = $null
     foreach ($metadataFile in @('action.yml', 'action.yaml')) {
-        $uri = "https://raw.githubusercontent.com/$repository/$sha/$metadataFile"
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Headers @{ 'User-Agent' = 'KeelMatrix-AuthSurface-Validator' } -Uri $uri
-            if ($response.StatusCode -eq 200) {
-                $metadata = $response.Content
-                break
+            $response = Get-GitHubResponse "repos/$repository/contents/${metadataFile}?ref=$sha" -AllowNotFound
+            if ($null -eq $response) { continue }
+            if ($response -is [array] -or $response.type -ne 'file' -or $response.encoding -ne 'base64' -or $response.content -isnot [string]) {
+                throw 'Invalid metadata response.'
             }
+            $metadata = [Text.UTF8Encoding]::new($false, $true).GetString([Convert]::FromBase64String($response.content))
+            break
         }
         catch {
-            if ($metadataFile -eq 'action.yaml') {
-                throw "Could not read pinned action metadata for $Action."
-            }
+            throw "Could not read pinned action metadata for $Action. Verification was unavailable or invalid."
         }
     }
 

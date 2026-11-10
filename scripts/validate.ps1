@@ -33,6 +33,7 @@ Push-Location $root
 try {
     Invoke-Gate 'release workflow contract' { & (Join-Path $PSScriptRoot 'validate-release-workflow.ps1') }
     Invoke-Gate 'release workflow validator mutation tests' { & (Join-Path $PSScriptRoot 'test-release-workflow.ps1') }
+    Invoke-Gate 'action pin request regression tests' { & (Join-Path $PSScriptRoot 'test-action-pin-requests.ps1') }
     Invoke-Gate 'release contract tests' { & (Join-Path $PSScriptRoot 'test-release-contract.ps1') }
     Invoke-Gate 'main changelog/version contract' {
         & (Join-Path $PSScriptRoot 'check-release-contract.ps1') -Mode Main -Version $version
