@@ -1,3 +1,4 @@
 NuGet/login@8d196754b4036150537f80ac539e15c2f1028841
 actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f

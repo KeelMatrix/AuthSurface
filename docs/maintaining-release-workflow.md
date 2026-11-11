@@ -1,4 +1,60 @@
-# Maintaining workflow action pins
+# Maintaining the release workflow
+
+## Publish packages and symbols
+
+`.github/workflows/release.yml` owns the release steps. The publication command
+lives in `scripts/push-release-package.ps1`, which requires an explicit `.nupkg`,
+its sibling `.snupkg`, and the temporary `NUGET_PUSH_TOKEN`. Before uploading it
+requires a v3 service index advertising both `PackagePublish/2.0.0` and
+`SymbolPackagePublish/4.9.0` with usable endpoints. The production source is
+`https://api.nuget.org/v3/index.json`.
+
+One `dotnet nuget push` uploads the primary and then the associated `.snupkg`.
+Do not set `--symbol-source` to the raw symbol upload URL: the .NET 8 client
+selects legacy `.symbols.nupkg` lookup and can exit successfully without sending
+the `.snupkg`. Do not add a second symbol push to a successful paired upload.
+Missing files or unsupported sources reject before upload; primary or symbol
+rejection fails the script and workflow. A failed push can leave an accepted
+primary: preserve the version, tag, and accepted effects, and reconcile provider
+state before any separately authorized recovery. Never replay the whole release
+or use `--skip-duplicate` to hide a partial publication.
+
+After exact-set/archive inspection, the workflow logs each archive's SHA-256 and
+writes `SHA256SUMS`. It retains both archives and that manifest as a GitHub Actions
+artifact for 90 days **before** OIDC authentication. Retention failure stops
+publication. Save the artifact ID, URL, digest, archive hashes, and expiry with
+the execution evidence; download recovery files before expiry. The artifact
+container digest differs from each archive's hash. A rebuild is not evidence of
+the original archive bytes.
+
+The local protocol regression uses synthetic archives, a loopback HTTP feed, and
+the repository-selected .NET client without real credentials or external uploads:
+
+```powershell
+dotnet test tests/KeelMatrix.AuthSurface.Tests -c Release --filter FullyQualifiedName~ReleasePublicationTests
+```
+
+It covers paired upload counts and bytes, missing archives, v3 discovery versus
+raw legacy lookup, invalid/unsupported service indexes, primary rejection,
+symbol rejection, duplicate conflicts, and child-process failure propagation.
+Complete validation runs these tests on Windows, Linux, and macOS. A successful
+workflow or accepted upload alone does not establish public availability or
+symbol indexing.
+
+For a symbol-only recovery, use the original retained `.snupkg` where available.
+If it is unavailable, rebuild with the original tagged source, SDK, and operating
+system (generated compiler inputs can differ across platforms), and compare each
+PDB's portable content ID and checksum with the actual public DLL's CodeView and
+PDB-checksum debug entries. Also verify the package ID/version and SourceLink
+revision. Stop if the public DLL cannot be retrieved or any identity differs.
+Only after independent verification and separate publication authorization may
+an explicit `.snupkg` be pushed through the v3 source; do not send the primary
+again, move the tag, or claim rebuilt archive-byte equivalence.
+
+See [NuGet symbol publication](https://learn.microsoft.com/en-us/nuget/create-packages/symbol-packages-snupkg)
+for the v3 requirement and separate symbol validation/indexing.
+
+## Maintain action pins
 
 Every `uses:` entry in every `.yml` or `.yaml` file under `.github/workflows/`
 must use a full 40-character commit SHA. Each entry must have one exact matching
@@ -75,13 +131,15 @@ pwsh -NoProfile -File .\scripts\test-release-workflow.ps1
 pwsh -NoProfile -File .\scripts\test-action-pin-requests.ps1
 ```
 
-The mutation check must reject an unpinned action, a tag name, an annotated tag
+The mutation check must reject publication bypasses, ignored publication or
+retention failures, absent archive evidence, authentication before retention,
+an unpinned action, a tag name, an annotated tag
 object SHA, a workflow action absent from the allowlist, missing CI token wiring,
 and ignored verification failures. The deterministic request tests exercise all
 pins and all three response boundaries (commit, `action.yml`, and `action.yaml`)
 against preserved JSON parsing in both custom-object and hashtable representations,
 including a fixture check that parsed arrays match both `[array]` and the
-`[pscustomobject]` shorthand. They exercise 216 null/empty/single/multiple/nested-array
+`[pscustomobject]` shorthand. They exercise null/empty/single/multiple/nested-array
 cases, valid objects (including inert provider envelope properties), ordinary
 unparsed dictionary success, scalar and required-field failures, and true-404
 valid and invalid fallback. They assert reached targets and exact request sequences,

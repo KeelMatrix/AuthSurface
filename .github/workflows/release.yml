@@ -94,6 +94,19 @@ jobs:
           }
           & .\scripts\inspect-package.ps1 -PackagePath (Join-Path $output $expected[0]) -SymbolPackagePath (Join-Path $output $expected[1]) -ExpectedVersion $env:RELEASE_VERSION
           if ($LASTEXITCODE -ne 0) { throw "Package inspection failed with exit code $LASTEXITCODE." }
+          $hashes = foreach ($name in $expected) {
+            $hash = (Get-FileHash -LiteralPath (Join-Path $output $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $name"
+          }
+          $hashes | Tee-Object -FilePath (Join-Path $output 'SHA256SUMS')
+
+      - name: Retain inspected release archives
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: release-${{ steps.release-version.outputs.version }}-${{ github.sha }}
+          path: artifacts/packages/
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Authenticate to NuGet.org
         id: nuget-login
@@ -108,6 +121,5 @@ jobs:
           NUGET_PUSH_TOKEN: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
           $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts/packages'
-          $source = 'https://api.nuget.org/v3/index.json'
-          dotnet nuget push (Join-Path $output "KeelMatrix.AuthSurface.${env:RELEASE_VERSION}.nupkg") --source $source --api-key $env:NUGET_PUSH_TOKEN --symbol-source 'https://symbols.nuget.org/upload' --symbol-api-key $env:NUGET_PUSH_TOKEN
+          & .\scripts\push-release-package.ps1 -PackagePath (Join-Path $output "KeelMatrix.AuthSurface.${env:RELEASE_VERSION}.nupkg")
           if ($LASTEXITCODE -ne 0) { throw "Package and symbol publication failed with exit code $LASTEXITCODE." }

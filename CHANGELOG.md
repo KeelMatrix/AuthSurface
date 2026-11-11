@@ -4,6 +4,10 @@ All notable changes to this package will be documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Release automation requires the matching symbol archive, uses v3 symbol-service discovery, and retains inspected archives with SHA-256 hashes before publication.
+
 ## [0.1.0] - 2026-11-11
 
 ### Added

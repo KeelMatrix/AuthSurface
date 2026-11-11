@@ -257,7 +257,8 @@ try {
             }
         }
     }
-    if ($shapeCount -ne 216) { throw 'The raw-shape matrix did not cover both representations at every pin and endpoint.' }
+    $expectedShapeCount = 2 * $pins.Count * 3 * $shapeCases.Count
+    if ($shapeCount -ne $expectedShapeCount) { throw 'The raw-shape matrix did not cover both representations at every pin and endpoint.' }
     $objectKind = 'PSCustomObject'
 
     $failure = ''
@@ -297,7 +298,7 @@ try {
         }
     }
     $global:LASTEXITCODE = 0
-    Write-Output 'Action pin request tests passed: 216 parser-backed raw-shape cases across both representations, all pins and endpoints, object/field/content/runtime controls, actual-404-only fallback, request sequences, authentication/redaction, workflow mutations, and 15 caller propagation cases (exit 1, before restore).'
+    Write-Output "Action pin request tests passed: $shapeCount parser-backed raw-shape cases across both representations, all pins and endpoints, object/field/content/runtime controls, actual-404-only fallback, request sequences, authentication/redaction, workflow mutations, and 15 caller propagation cases (exit 1, before restore)."
 }
 finally {
     $env:GITHUB_TOKEN = $originalToken

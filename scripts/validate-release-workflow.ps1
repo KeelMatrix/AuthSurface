@@ -188,6 +188,28 @@ if ($buildIndex -lt 0 -or $testIndex -lt $buildIndex -or $packIndex -lt $testInd
     throw 'Release workflow must build and test before packing.'
 }
 
+$releaseSteps = @([regex]::Split($releaseWorkflow, '(?m)(?=^      - )'))
+$publicationSteps = @($releaseSteps | Where-Object { $_ -match 'push-release-package\.ps1' })
+if ($publicationSteps.Count -ne 1 -or
+    $publicationSteps[0] -notmatch '(?m)^          & \.\\scripts\\push-release-package\.ps1 -PackagePath \(Join-Path \$output "KeelMatrix\.AuthSurface\.\$\{env:RELEASE_VERSION\}\.nupkg"\)\s*\r?\n          if \(\$LASTEXITCODE -ne 0\)' -or
+    $publicationSteps[0] -match '(?m)^        (?:continue-on-error|if):' -or
+    $releaseWorkflow -match 'dotnet nuget push|--symbol-source|--skip-duplicate') {
+    throw 'Release must call the tested publication script once, propagate failures, and use v3 symbol discovery.'
+}
+$retentionSteps = @($releaseSteps | Where-Object { $_ -match 'uses: actions/upload-artifact@' })
+if ($retentionSteps.Count -ne 1 -or
+    $retentionSteps[0] -notmatch '(?m)^          path: artifacts/packages/\s*$' -or
+    $retentionSteps[0] -notmatch '(?m)^          if-no-files-found: error\s*$' -or
+    $retentionSteps[0] -notmatch '(?m)^          retention-days: 90\s*$' -or
+    $retentionSteps[0] -match '(?m)^        (?:continue-on-error|if):' -or
+    $releaseWorkflow.IndexOf('uses: actions/upload-artifact@') -gt $releaseWorkflow.IndexOf('uses: NuGet/login@') -or
+    $releaseWorkflow.IndexOf('uses: NuGet/login@') -gt $releaseWorkflow.IndexOf('push-release-package.ps1') -or
+    $releaseWorkflow.IndexOf('SHA256SUMS') -lt $releaseWorkflow.IndexOf('inspect-package.ps1') -or
+    $releaseWorkflow.IndexOf('SHA256SUMS') -gt $releaseWorkflow.IndexOf('uses: actions/upload-artifact@') -or
+    $releaseWorkflow -notmatch 'Get-FileHash -LiteralPath .* -Algorithm SHA256') {
+    throw 'Release must hash and retain the inspected archives before authentication and publication.'
+}
+
 $githubHeaders = @{
     'User-Agent' = 'KeelMatrix-AuthSurface-Validator'
     Accept = 'application/vnd.github+json'
