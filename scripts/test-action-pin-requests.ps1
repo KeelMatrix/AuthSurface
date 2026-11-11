@@ -301,7 +301,8 @@ try {
             $diagnostic = if ($kind -eq 'commit') { 'Could not verify pinned action commit' } else { 'Could not read pinned action metadata' }
             $expected = @(Get-ExpectedSequence $pins[0] $kind)
             if ($case -eq 'recovery-route') {
-                $diagnostic = 'Primary tag routing or isolated first-attempt main recovery guard is missing.'
+                # Match the stable category before terminal-width-dependent wrapping.
+                $diagnostic = 'Primary tag routing'
                 $expected = @()
             }
             $actual = @([regex]::Matches($output, '(?m)^Reached request: ([^\r\n]+)\r?$') | ForEach-Object { $_.Groups[1].Value })

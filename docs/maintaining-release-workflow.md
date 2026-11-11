@@ -219,7 +219,8 @@ redacted diagnostics, content decoding, and supported/deprecated runtimes.
 Eighteen child cases prove exit 1 from direct validation, mutation tests, and
 the full validation entry point before controlled restore for HTTP 403, commit
 singleton arrays, empty-array and singleton successful `action.yml`, and singleton
-fallback, plus a missing primary event guard. The routing control fails before
+fallback, plus a missing primary event guard. Diagnostic assertions use a short
+category prefix so terminal line wrapping cannot change the result. The routing control fails before
 any provider lookup in all three callers. An unexpectedly returning child exits zero; a defensive restore sentinel
 exits 86. Both fail the harness, as do missing diagnostics, changed request prefixes,
 private output, or a success message on rejection.
