@@ -7,7 +7,13 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Net.Http.Headers;
 using Xunit;
 
@@ -283,13 +289,26 @@ public sealed class SymbolRecoveryTests
     public static IEnumerable<object[]> ProtocolHeaders()
     {
         foreach (bool raw in new[] { false, true })
-            foreach (string header in new[] { "missing", "official", "empty", "resource", "wrong", "near", "duplicate", "mixed-duplicate", "multiple", "repeated-value", "correct", "lowercase" })
-                yield return new object[] { raw, header };
+        {
+            foreach ((string control, string[] values) in new (string, string[])[]
+            {
+                ("missing", []), ("official", []), ("empty", [""]), ("resource", ["4.9.0"]),
+                ("wrong", ["3.0.0"]), ("near", ["4.1.0x"]), ("multiple", ["4.1.0, 4.9.0"]),
+                ("reversed-multiple", ["4.9.0, 4.1.0"]), ("repeated-value", ["4.1.0, 4.1.0"]),
+                ("empty-first-value", [", 4.1.0"]), ("empty-last-value", ["4.1.0,"]),
+                ("correct", ["4.1.0"]), ("lowercase", ["4.1.0"])
+            })
+                yield return new object[] { raw, control, values };
+            foreach (bool mixed in new[] { false, true })
+                foreach ((string first, string firstValue) in new[] { ("correct", "4.1.0"), ("resource", "4.9.0"), ("empty", "") })
+                    foreach ((string second, string secondValue) in new[] { ("correct", "4.1.0"), ("resource", "4.9.0"), ("empty", "") })
+                        yield return new object[] { raw, $"{(mixed ? "mixed-" : "")}duplicate-{first}-{second}", new[] { firstValue, secondValue } };
+        }
     }
 
     [Theory]
     [MemberData(nameof(ProtocolHeaders))]
-    public async Task BothWireReceiversEnforceOneExactProtocolValue(bool raw, string control)
+    public async Task BothWireReceiversEnforceOneExactProtocolValue(bool raw, string control, string[] values)
     {
         using var files = await Fixture.Create();
         using var feed = new Feed(files, raw ? 0 : 201);
@@ -298,21 +317,9 @@ public sealed class SymbolRecoveryTests
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
         multipart.Add(content, "package", Path.GetFileName(files.Archive));
         byte[] body = await multipart.ReadAsByteArrayAsync();
-        string header = control switch
-        {
-            "missing" => "",
-            "official" => "X-NuGet-Client-Version: 4.1.0\r\n",
-            "empty" => "X-NuGet-Protocol-Version: \r\n",
-            "resource" => "X-NuGet-Protocol-Version: 4.9.0\r\n",
-            "wrong" => "X-NuGet-Protocol-Version: 3.0.0\r\n",
-            "near" => "X-NuGet-Protocol-Version: 4.1.0x\r\n",
-            "duplicate" => "X-NuGet-Protocol-Version: 4.1.0\r\nX-NuGet-Protocol-Version: 4.1.0\r\n",
-            "mixed-duplicate" => "X-NuGet-Protocol-Version: 4.1.0\r\nx-nuget-protocol-version: 4.1.0\r\n",
-            "multiple" => "X-NuGet-Protocol-Version: 4.1.0, 4.9.0\r\n",
-            "repeated-value" => "X-NuGet-Protocol-Version: 4.1.0, 4.1.0\r\n",
-            "lowercase" => "x-nuget-protocol-version: 4.1.0\r\n",
-            _ => "X-NuGet-Protocol-Version: 4.1.0\r\n"
-        };
+        string header = control == "official" ? "X-NuGet-Client-Version: 4.1.0\r\n"
+            : string.Concat(values.Select((value, index) =>
+                $"{(control == "lowercase" || (control.StartsWith("mixed-", StringComparison.Ordinal) && index == 1) ? "x-nuget-protocol-version" : "X-NuGet-Protocol-Version")}: {value}\r\n"));
         var endpoint = new Uri(feed.SymbolEndpoint);
         using var client = new TcpClient();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -330,6 +337,7 @@ public sealed class SymbolRecoveryTests
         Assert.Single(feed.Requests);
         Assert.Empty(feed.InvalidUploads);
         Assert.Equal(valid ? 0 : 1, feed.InvalidProtocolUploads.Count);
+        Assert.Equal(values, Assert.Single(feed.ProtocolValues));
     }
 
     private static bool HasProtocol(IEnumerable<string> values) => values.ToArray() is ["4.1.0"];
@@ -545,8 +553,7 @@ public sealed class SymbolRecoveryTests
 
     private sealed class Feed : IDisposable
     {
-        private readonly HttpListener listener = new();
-        private readonly Task server;
+        private readonly WebApplication server;
         private readonly DroppedResponseServer? dropper;
         public string Base { get; }
         public string Source { get; }
@@ -555,90 +562,86 @@ public sealed class SymbolRecoveryTests
         public ConcurrentQueue<string> Uploads { get; } = new();
         public ConcurrentQueue<string> InvalidUploads { get; } = new();
         public ConcurrentQueue<string> InvalidProtocolUploads { get; } = new();
+        public ConcurrentQueue<string[]> ProtocolValues { get; } = new();
         public Feed(Fixture files, int status = 201, string discovery = "valid")
         {
-            var socket = new TcpListener(IPAddress.Loopback, 0);
-            socket.Start();
-            int port = ((IPEndPoint)socket.LocalEndpoint).Port;
-            socket.Stop();
-            Base = $"http://127.0.0.1:{port}/";
+            var builder = WebApplication.CreateSlimBuilder();
+            builder.Logging.ClearProviders();
+            // Kestrel retains each physical field, including duplicates on Unix.
+            builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
+            server = builder.Build();
+            server.Run(async context =>
+            {
+                string path = context.Request.Path.Value!;
+                Requests.Enqueue(context.Request.Method + " " + path);
+                context.Response.StatusCode = 404;
+                if (context.Request.Method == "GET" && path == "/v3/index.json")
+                {
+                    object? endpoint = discovery switch
+                    {
+                        "relative" => "/symbols",
+                        "null-id" => null,
+                        "array-id" => new[] { SymbolEndpoint },
+                        "ftp" => "ftp://example.com/symbols",
+                        "non-loopback-http" => "http://example.com/symbols",
+                        "userinfo" => "https://user@example.com/symbols",
+                        _ => SymbolEndpoint
+                    };
+                    var resources = new List<object?>();
+                    if (discovery != "no-primary") resources.Add(new Dictionary<string, object> { ["@id"] = Base + "primary", ["@type"] = "PackagePublish/2.0.0" });
+                    var resource = new Dictionary<string, object?>
+                    {
+                        ["@id"] = endpoint,
+                        ["@type"] = discovery == "type-array" ? modernTypes
+                        : discovery is "wrong-version" or "legacy" ? "SymbolPackagePublish/2.0.0" : "SymbolPackagePublish/4.9.0"
+                    };
+                    if (discovery == "missing-type") resource.Remove("@type");
+                    if (discovery != "missing") resources.Add(discovery == "null-resource" ? null : resource);
+                    if (discovery == "same-duplicate") resources.Add(resource);
+                    if (discovery == "conflicting-duplicate") resources.Add(new Dictionary<string, string> { ["@id"] = Base + "other", ["@type"] = "SymbolPackagePublish/4.9.0" });
+                    string body = discovery switch
+                    {
+                        "bad-json" => "broken",
+                        "root-array" => "[]",
+                        "root-null" => "null",
+                        "null-resources" => "{\"version\":\"3.0.0\",\"resources\":null}",
+                        "scalar-resources" => "{\"version\":\"3.0.0\",\"resources\":1}",
+                        _ => JsonSerializer.Serialize(new { version = discovery == "wrong-index-version" ? "2.0.0" : "3.0.0", resources })
+                    };
+                    context.Response.StatusCode = discovery == "index-error" ? 503 : discovery == "redirect" ? 302 : 200;
+                    if (discovery == "redirect") context.Response.Headers.Location = Base + "other";
+                    await context.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(body));
+                }
+                else if (context.Request.Method == "GET" && path == "/primary.nupkg")
+                {
+                    context.Response.StatusCode = 200;
+                    await context.Response.Body.WriteAsync(files.PrimaryBytes);
+                }
+                else if (context.Request.Method == "PUT")
+                {
+                    Uploads.Enqueue(path);
+                    using var body = new MemoryStream();
+                    await context.Request.Body.CopyToAsync(body);
+                    bool valid = path == "/symbols" && await HasExactArchive(body.ToArray(), context.Request.ContentType, files) &&
+                        context.Request.Headers["X-NuGet-ApiKey"] == "synthetic-local-key";
+                    string[] values = context.Request.Headers["X-NuGet-Protocol-Version"].ToArray()!;
+                    ProtocolValues.Enqueue(values);
+                    bool protocol = HasProtocol(values);
+                    if (!valid) InvalidUploads.Enqueue(path);
+                    if (!protocol) InvalidProtocolUploads.Enqueue(path);
+                    context.Response.StatusCode = valid && protocol ? status : 400;
+                    context.Response.Headers["x-ms-request-id"] = status == 201 ? "synthetic-local-key" : "synthetic-request-id";
+                    if (status == 301) context.Response.Headers.Location = Base + "primary";
+                    if (status != 204) await context.Response.Body.WriteAsync(Encoding.UTF8.GetBytes("private-response-body"));
+                }
+            });
+            server.StartAsync().GetAwaiter().GetResult();
+            Base = server.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single() + "/";
             if (status <= 0 || discovery == "index-drop") dropper = new DroppedResponseServer(this, files, status);
             Source = discovery == "index-drop" ? dropper!.Base + "v3/index.json" : Base + "v3/index.json";
             SymbolEndpoint = status <= 0 ? dropper!.Base + "symbols" : Base + "symbols";
-            listener.Prefixes.Add(Base);
-            listener.Start();
-            server = Task.Run(async () =>
-            {
-                while (listener.IsListening)
-                {
-                    HttpListenerContext context;
-                    try { context = await listener.GetContextAsync(); }
-                    catch (Exception ex) when (ex is HttpListenerException or ObjectDisposedException) { break; }
-                    string path = context.Request.Url!.AbsolutePath;
-                    Requests.Enqueue(context.Request.HttpMethod + " " + path);
-                    context.Response.StatusCode = 404;
-                    if (context.Request.HttpMethod == "GET" && path == "/v3/index.json")
-                    {
-                        object? endpoint = discovery switch
-                        {
-                            "relative" => "/symbols",
-                            "null-id" => null,
-                            "array-id" => new[] { SymbolEndpoint },
-                            "ftp" => "ftp://example.com/symbols",
-                            "non-loopback-http" => "http://example.com/symbols",
-                            "userinfo" => "https://user@example.com/symbols",
-                            _ => SymbolEndpoint
-                        };
-                        var resources = new List<object?>();
-                        if (discovery != "no-primary") resources.Add(new Dictionary<string, object> { ["@id"] = Base + "primary", ["@type"] = "PackagePublish/2.0.0" });
-                        var resource = new Dictionary<string, object?>
-                        {
-                            ["@id"] = endpoint,
-                            ["@type"] = discovery == "type-array" ? modernTypes
-                            : discovery is "wrong-version" or "legacy" ? "SymbolPackagePublish/2.0.0" : "SymbolPackagePublish/4.9.0"
-                        };
-                        if (discovery == "missing-type") resource.Remove("@type");
-                        if (discovery != "missing") resources.Add(discovery == "null-resource" ? null : resource);
-                        if (discovery == "same-duplicate") resources.Add(resource);
-                        if (discovery == "conflicting-duplicate") resources.Add(new Dictionary<string, string> { ["@id"] = Base + "other", ["@type"] = "SymbolPackagePublish/4.9.0" });
-                        string body = discovery switch
-                        {
-                            "bad-json" => "broken",
-                            "root-array" => "[]",
-                            "root-null" => "null",
-                            "null-resources" => "{\"version\":\"3.0.0\",\"resources\":null}",
-                            "scalar-resources" => "{\"version\":\"3.0.0\",\"resources\":1}",
-                            _ => JsonSerializer.Serialize(new { version = discovery == "wrong-index-version" ? "2.0.0" : "3.0.0", resources })
-                        };
-                        context.Response.StatusCode = discovery == "index-error" ? 503 : discovery == "redirect" ? 302 : 200;
-                        context.Response.RedirectLocation = discovery == "redirect" ? Base + "other" : null;
-                        await context.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(body));
-                    }
-                    else if (context.Request.HttpMethod == "GET" && path == "/primary.nupkg")
-                    {
-                        context.Response.StatusCode = 200;
-                        await context.Response.OutputStream.WriteAsync(files.PrimaryBytes);
-                    }
-                    else if (context.Request.HttpMethod == "PUT")
-                    {
-                        Uploads.Enqueue(path);
-                        using var body = new MemoryStream();
-                        await context.Request.InputStream.CopyToAsync(body);
-                        bool valid = path == "/symbols" && await HasExactArchive(body.ToArray(), context.Request.ContentType, files) &&
-                            context.Request.Headers["X-NuGet-ApiKey"] == "synthetic-local-key";
-                        bool protocol = HasProtocol(context.Request.Headers.GetValues("X-NuGet-Protocol-Version") ?? []);
-                        if (!valid) InvalidUploads.Enqueue(path);
-                        if (!protocol) InvalidProtocolUploads.Enqueue(path);
-                        context.Response.StatusCode = valid && protocol ? status : 400;
-                        context.Response.Headers["x-ms-request-id"] = status == 201 ? "synthetic-local-key" : "synthetic-request-id";
-                        if (status == 301) context.Response.RedirectLocation = Base + "primary";
-                        if (status != 204) await context.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes("private-response-body"));
-                    }
-                    context.Response.Close();
-                }
-            });
         }
-        public void Dispose() { listener.Close(); server.GetAwaiter().GetResult(); dropper?.Dispose(); }
+        public void Dispose() { server.StopAsync().GetAwaiter().GetResult(); server.DisposeAsync().AsTask().GetAwaiter().GetResult(); dropper?.Dispose(); }
     }
 
     // HttpListener.Abort can emit its default rejection on Unix. A raw connection
@@ -699,7 +702,9 @@ public sealed class SymbolRecoveryTests
                             feed.Uploads.Enqueue(request[1]);
                             bool valid = request[1] == "/symbols" && await HasExactArchive(body.ToArray(), headers["Content-Type"], files) &&
                                 headers["X-NuGet-ApiKey"] == "synthetic-local-key";
-                            bool protocol = HasProtocol(headers.GetValues("X-NuGet-Protocol-Version") ?? []);
+                            string[] values = headers.GetValues("X-NuGet-Protocol-Version") ?? [];
+                            feed.ProtocolValues.Enqueue(values);
+                            bool protocol = HasProtocol(values);
                             if (!valid) feed.InvalidUploads.Enqueue(request[1]);
                             if (!protocol) feed.InvalidProtocolUploads.Enqueue(request[1]);
                             if (!valid || !protocol)

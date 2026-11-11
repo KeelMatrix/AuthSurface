@@ -127,8 +127,12 @@ Transport-loss controls close a raw TCP connection after receiving the complete
 upload body, covering clean close, reset and a truncated response header.
 `HttpListener.Abort` is unsuitable for this control because it can emit a
 rejection response on Unix instead of losing the response.
-Both receivers require exactly one protocol value `4.1.0`, with case-insensitive
-header names. Missing, empty, wrong, duplicate and multiple values reject before
+The HTTP feed uses Kestrel to preserve each physical header field on Windows,
+Linux and macOS; `HttpListener` merges or discards duplicates by platform. Both
+receivers assert the received field values and require exactly one protocol value `4.1.0`,
+with case-insensitive header names. Duplicate controls cross correct, wrong and
+empty values in both orders, using the same and mixed-case names. Missing,
+empty, wrong, duplicate and comma-separated multiple values reject before
 the configured response or loss scenario; an official-client header alone does
 not satisfy this custom-client contract. Isolated mutations of the actual helper
 prove missing/wrong headers fail through the actual workflow callers. Valid
