@@ -88,7 +88,11 @@ retention blocks authentication and submission.
 uses only the temporary login credential. Recovery does **not** use the native
 push client's retry policy or its potentially silent missing-service behavior.
 It sends the documented modern symbol-publish multipart body to the already
-verified endpoint with a fresh .NET HTTP client, HTTP/1.1, redirects disabled,
+verified endpoint with exactly one `X-NuGet-Protocol-Version: 4.1.0` header value
+and the temporary `X-NuGet-ApiKey`. The protocol header follows
+[NuGet.org's third-party client requirement](https://learn.microsoft.com/en-us/nuget/api/nuget-protocols#client-requirement);
+its value is distinct from the `SymbolPackagePublish/4.9.0` resource version.
+The request uses a fresh .NET HTTP client, HTTP/1.1, redirects disabled,
 no application retries and a 60-second timeout. There is one `SendAsync` call;
 there is no at-most-once provider-effect guarantee under transport uncertainty.
 The primary upload service is never used by this command.
@@ -123,6 +127,14 @@ Transport-loss controls close a raw TCP connection after receiving the complete
 upload body, covering clean close, reset and a truncated response header.
 `HttpListener.Abort` is unsuitable for this control because it can emit a
 rejection response on Unix instead of losing the response.
+Both receivers require exactly one protocol value `4.1.0`, with case-insensitive
+header names. Missing, empty, wrong, duplicate and multiple values reject before
+the configured response or loss scenario; an official-client header alone does
+not satisfy this custom-client contract. Isolated mutations of the actual helper
+prove missing/wrong headers fail through the actual workflow callers. Valid
+requests retain every status and lost-response control, exact decoded single-part
+archive and credential checks, and one symbols PUT with no primary PUT. These
+synthetic rejections are local contract checks, not proof of provider enforcement.
 
 See [NuGet symbol publication](https://learn.microsoft.com/en-us/nuget/create-packages/symbol-packages-snupkg)
 for the v3 requirement and separate symbol validation/indexing, and

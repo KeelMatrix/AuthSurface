@@ -203,6 +203,9 @@ $request.Version = [version] '1.1'
 $request.VersionPolicy = [Net.Http.HttpVersionPolicy]::RequestVersionExact
 $request.Headers.ConnectionClose = $true
 $null = $request.Headers.TryAddWithoutValidation('X-NuGet-ApiKey', $env:NUGET_PUSH_TOKEN)
+# NuGet.org's third-party push protocol, distinct from SymbolPackagePublish/4.9.0:
+# https://learn.microsoft.com/en-us/nuget/api/nuget-protocols#client-requirement
+$request.Headers.Add('X-NuGet-Protocol-Version', '4.1.0')
 $multipart = [Net.Http.MultipartFormDataContent]::new()
 $content = [Net.Http.ByteArrayContent]::new($retainedBytes)
 $content.Headers.ContentType = [Net.Http.Headers.MediaTypeHeaderValue]::new('application/octet-stream')

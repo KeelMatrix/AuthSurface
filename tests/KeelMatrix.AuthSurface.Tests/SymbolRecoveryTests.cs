@@ -7,6 +7,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Net.Http.Headers;
 using Xunit;
 
 namespace KeelMatrix.AuthSurface.Tests;
@@ -67,6 +69,7 @@ public sealed class SymbolRecoveryTests
         Assert.Equal(symbolUpload, feed.Uploads.ToArray());
         Assert.Equal(3, feed.Requests.Count);
         Assert.Empty(feed.InvalidUploads);
+        Assert.Empty(feed.InvalidProtocolUploads);
         using JsonDocument receipt = JsonDocument.Parse(File.ReadAllText(files.Receipt));
         Assert.Equal(effect, receipt.RootElement.GetProperty("effect").GetString());
         if (status <= 0) Assert.Equal(JsonValueKind.Null, receipt.RootElement.GetProperty("httpStatus").ValueKind);
@@ -227,16 +230,24 @@ public sealed class SymbolRecoveryTests
         Assert.False(File.Exists(files.Receipt));
     }
 
+    public static IEnumerable<object[]> WorkflowEnvelopes()
+    {
+        foreach (int status in new[] { 201, 200, 202, 204, 301, 400, 401, 403, 404, 409, 413, 429, 500, 503, 0, -1, -2 })
+            yield return new object[] { false, status, "correct" };
+        yield return new object[] { true, 201, "correct" };
+        foreach (int status in new[] { 201, 0 })
+            foreach (string header in new[] { "missing", "wrong" })
+                yield return new object[] { false, status, header };
+    }
+
     [Theory]
-    [InlineData(false, 201)]
-    [InlineData(true, 201)]
-    [InlineData(false, 409)]
-    [InlineData(false, 503)]
-    public async Task ActualWorkflowRunBlocksPropagateFailuresAndRetainBeforeLogin(bool retentionFails, int status)
+    [MemberData(nameof(WorkflowEnvelopes))]
+    public async Task ActualWorkflowRunBlocksPropagateFailuresAndRetainBeforeLogin(bool retentionFails, int status, string header)
     {
         using var files = await Fixture.Create();
         using var feed = new Feed(files, status);
         files.Bind(feed);
+        if (header != "correct") files.MutateProtocolHeader(header);
         string workflow = File.ReadAllText(Path.Combine(Root, ".github", "workflows", "release.yml"));
         string prepare = RunBlock(workflow, "Prepare exact symbols recovery");
         string submit = RunBlock(workflow, "Submit exact symbols only");
@@ -245,10 +256,97 @@ public sealed class SymbolRecoveryTests
             "Set-Content login-marker 'synthetic login'\n$env:NUGET_PUSH_TOKEN='synthetic-local-key'\n" + submit;
         File.WriteAllText(Path.Combine(files.Directory, "driver.ps1"), driver);
         Result result = await files.Run("pwsh", "-NoProfile", "-File", Path.Combine(files.Directory, "driver.ps1"));
-        Assert.Equal(!retentionFails && status == 201, result.ExitCode == 0);
+        Assert.Equal(!retentionFails && status == 201 && header == "correct", result.ExitCode == 0);
         Assert.Equal(!retentionFails, File.Exists(Path.Combine(files.Directory, "login-marker")));
         Assert.Equal(retentionFails ? 0 : 1, feed.Uploads.Count);
         Assert.Empty(feed.InvalidUploads);
+        Assert.Equal(header == "correct" ? 0 : 1, feed.InvalidProtocolUploads.Count);
+        Assert.Equal(retentionFails ? 2 : 3, feed.Requests.Count);
+        Assert.All(feed.Uploads, path => Assert.Equal("/symbols", path));
+        if (!retentionFails)
+        {
+            using JsonDocument receipt = JsonDocument.Parse(File.ReadAllText(files.Receipt));
+            JsonElement effect = receipt.RootElement;
+            Assert.Equal(header == "correct" ? status == 201 ? "accepted" : status == 409 ? "conflict" :
+                status is 400 or 401 or 403 or 404 or 413 ? "rejected" : "unknown" : "rejected", effect.GetProperty("effect").GetString());
+            if (header != "correct") Assert.Equal(400, effect.GetProperty("httpStatus").GetInt32());
+            Assert.Equal(1, effect.GetProperty("applicationSendCalls").GetInt32());
+            Assert.Equal(0, effect.GetProperty("applicationRetries").GetInt32());
+            Result replay = await files.Invoke("Submit", token: true);
+            Assert.NotEqual(0, replay.ExitCode);
+            Assert.Single(feed.Uploads);
+            Assert.DoesNotContain("synthetic-local-key", result.Output + File.ReadAllText(files.Receipt), StringComparison.Ordinal);
+            Assert.DoesNotContain("private-response-body", result.Output + File.ReadAllText(files.Receipt), StringComparison.Ordinal);
+        }
+    }
+
+    public static IEnumerable<object[]> ProtocolHeaders()
+    {
+        foreach (bool raw in new[] { false, true })
+            foreach (string header in new[] { "missing", "official", "empty", "resource", "wrong", "near", "duplicate", "mixed-duplicate", "multiple", "repeated-value", "correct", "lowercase" })
+                yield return new object[] { raw, header };
+    }
+
+    [Theory]
+    [MemberData(nameof(ProtocolHeaders))]
+    public async Task BothWireReceiversEnforceOneExactProtocolValue(bool raw, string control)
+    {
+        using var files = await Fixture.Create();
+        using var feed = new Feed(files, raw ? 0 : 201);
+        using var multipart = new System.Net.Http.MultipartFormDataContent();
+        using var content = new System.Net.Http.ByteArrayContent(files.SymbolBytes);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        multipart.Add(content, "package", Path.GetFileName(files.Archive));
+        byte[] body = await multipart.ReadAsByteArrayAsync();
+        string header = control switch
+        {
+            "missing" => "",
+            "official" => "X-NuGet-Client-Version: 4.1.0\r\n",
+            "empty" => "X-NuGet-Protocol-Version: \r\n",
+            "resource" => "X-NuGet-Protocol-Version: 4.9.0\r\n",
+            "wrong" => "X-NuGet-Protocol-Version: 3.0.0\r\n",
+            "near" => "X-NuGet-Protocol-Version: 4.1.0x\r\n",
+            "duplicate" => "X-NuGet-Protocol-Version: 4.1.0\r\nX-NuGet-Protocol-Version: 4.1.0\r\n",
+            "mixed-duplicate" => "X-NuGet-Protocol-Version: 4.1.0\r\nx-nuget-protocol-version: 4.1.0\r\n",
+            "multiple" => "X-NuGet-Protocol-Version: 4.1.0, 4.9.0\r\n",
+            "repeated-value" => "X-NuGet-Protocol-Version: 4.1.0, 4.1.0\r\n",
+            "lowercase" => "x-nuget-protocol-version: 4.1.0\r\n",
+            _ => "X-NuGet-Protocol-Version: 4.1.0\r\n"
+        };
+        var endpoint = new Uri(feed.SymbolEndpoint);
+        using var client = new TcpClient();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await client.ConnectAsync(endpoint.Host, endpoint.Port, timeout.Token);
+        NetworkStream stream = client.GetStream();
+        await stream.WriteAsync(Encoding.ASCII.GetBytes($"PUT /symbols HTTP/1.1\r\nHost: {endpoint.Authority}\r\nConnection: close\r\nX-NuGet-ApiKey: synthetic-local-key\r\n{header}Content-Type: {multipart.Headers.ContentType}\r\nContent-Length: {body.Length}\r\n\r\n"), timeout.Token);
+        await stream.WriteAsync(body, timeout.Token);
+        using var response = new MemoryStream();
+        await stream.CopyToAsync(response, timeout.Token);
+        bool valid = control is "correct" or "lowercase";
+        string statusLine = Encoding.ASCII.GetString(response.ToArray()).Split('\r')[0];
+        if (valid && raw) Assert.Empty(statusLine);
+        else Assert.StartsWith(valid ? "HTTP/1.1 201" : "HTTP/1.1 400", statusLine, StringComparison.Ordinal);
+        Assert.Equal(symbolUpload, feed.Uploads.ToArray());
+        Assert.Single(feed.Requests);
+        Assert.Empty(feed.InvalidUploads);
+        Assert.Equal(valid ? 0 : 1, feed.InvalidProtocolUploads.Count);
+    }
+
+    private static bool HasProtocol(IEnumerable<string> values) => values.ToArray() is ["4.1.0"];
+
+    private static async Task<bool> HasExactArchive(byte[] body, string? contentType, Fixture files)
+    {
+        if (!MediaTypeHeaderValue.TryParse(contentType, out MediaTypeHeaderValue? type) ||
+            !type.MediaType.Equals("multipart/form-data", StringComparison.OrdinalIgnoreCase) || !type.Boundary.HasValue) return false;
+        using var stream = new MemoryStream(body);
+        var reader = new MultipartReader(HeaderUtilities.RemoveQuotes(type.Boundary).Value!, stream);
+        MultipartSection? part = await reader.ReadNextSectionAsync();
+        if (part is null || !ContentDispositionHeaderValue.TryParse(part.ContentDisposition, out ContentDispositionHeaderValue? disposition) ||
+            disposition.DispositionType != "form-data" || HeaderUtilities.RemoveQuotes(disposition.Name) != "package" ||
+            HeaderUtilities.RemoveQuotes(disposition.FileName) != Path.GetFileName(files.Archive) || part.ContentType != "application/octet-stream") return false;
+        using var archive = new MemoryStream();
+        await part.Body.CopyToAsync(archive);
+        return archive.ToArray().AsSpan().SequenceEqual(files.SymbolBytes) && await reader.ReadNextSectionAsync() is null;
     }
 
     [Fact]
@@ -391,6 +489,17 @@ public sealed class SymbolRecoveryTests
         }
 
         public void SaveContract() => File.WriteAllText(ContractPath, JsonSerializer.Serialize(Contract));
+        public void MutateProtocolHeader(string control)
+        {
+            string path = Path.Combine(Directory, "scripts", "recover-symbols.ps1");
+            string script = File.ReadAllText(path);
+            const string original = "$request.Headers.Add('X-NuGet-Protocol-Version', '4.1.0')";
+            Assert.Single(Regex.Matches(script, Regex.Escape(original)).Cast<Match>());
+            string changed = script.Replace(original, control == "missing" ? "" : original.Replace("4.1.0", "4.9.0", StringComparison.Ordinal), StringComparison.Ordinal);
+            Assert.NotEqual(script, changed);
+            File.WriteAllText(path, changed);
+            Assert.DoesNotContain(original, File.ReadAllText(path), StringComparison.Ordinal);
+        }
         public Task<Result> Invoke(string mode, bool token = false)
         {
             Environment["NUGET_PUSH_TOKEN"] = token ? "synthetic-local-key" : "";
@@ -445,6 +554,7 @@ public sealed class SymbolRecoveryTests
         public ConcurrentQueue<string> Requests { get; } = new();
         public ConcurrentQueue<string> Uploads { get; } = new();
         public ConcurrentQueue<string> InvalidUploads { get; } = new();
+        public ConcurrentQueue<string> InvalidProtocolUploads { get; } = new();
         public Feed(Fixture files, int status = 201, string discovery = "valid")
         {
             var socket = new TcpListener(IPAddress.Loopback, 0);
@@ -514,11 +624,12 @@ public sealed class SymbolRecoveryTests
                         Uploads.Enqueue(path);
                         using var body = new MemoryStream();
                         await context.Request.InputStream.CopyToAsync(body);
-                        if (path != "/symbols" || body.ToArray().AsSpan().IndexOf(files.SymbolBytes) < 0 ||
-                            context.Request.Headers["X-NuGet-ApiKey"] != "synthetic-local-key" ||
-                            context.Request.ContentType?.StartsWith("multipart/form-data;", StringComparison.Ordinal) != true)
-                            InvalidUploads.Enqueue(path);
-                        context.Response.StatusCode = status;
+                        bool valid = path == "/symbols" && await HasExactArchive(body.ToArray(), context.Request.ContentType, files) &&
+                            context.Request.Headers["X-NuGet-ApiKey"] == "synthetic-local-key";
+                        bool protocol = HasProtocol(context.Request.Headers.GetValues("X-NuGet-Protocol-Version") ?? []);
+                        if (!valid) InvalidUploads.Enqueue(path);
+                        if (!protocol) InvalidProtocolUploads.Enqueue(path);
+                        context.Response.StatusCode = valid && protocol ? status : 400;
                         context.Response.Headers["x-ms-request-id"] = status == 201 ? "synthetic-local-key" : "synthetic-request-id";
                         if (status == 301) context.Response.RedirectLocation = Base + "primary";
                         if (status != 204) await context.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes("private-response-body"));
@@ -555,7 +666,7 @@ public sealed class SymbolRecoveryTests
                         NetworkStream stream = client.GetStream();
                         string[] request = (await ReadLine(stream, stop.Token)).Split(' ');
                         feed.Requests.Enqueue(request[0] + " " + request[1]);
-                        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        var headers = new System.Collections.Specialized.NameValueCollection(StringComparer.OrdinalIgnoreCase);
                         string line;
                         while ((line = await ReadLine(stream, stop.Token)).Length != 0)
                         {
@@ -563,10 +674,10 @@ public sealed class SymbolRecoveryTests
                             if (colon <= 0) throw new InvalidDataException("Malformed synthetic HTTP header.");
                             headers.Add(line[..colon], line[(colon + 1)..].Trim());
                         }
-                        if (headers.TryGetValue("Expect", out string? expect) && expect == "100-continue")
+                        if (headers["Expect"] == "100-continue")
                             await stream.WriteAsync("HTTP/1.1 100 Continue\r\n\r\n"u8.ToArray(), stop.Token);
                         using var body = new MemoryStream();
-                        if (headers.TryGetValue("Transfer-Encoding", out string? encoding) && encoding == "chunked")
+                        if (headers["Transfer-Encoding"] == "chunked")
                         {
                             while (true)
                             {
@@ -580,16 +691,23 @@ public sealed class SymbolRecoveryTests
                                 if ((await ReadLine(stream, stop.Token)).Length != 0) throw new InvalidDataException("Malformed synthetic chunk.");
                             }
                         }
-                        else if (headers.TryGetValue("Content-Length", out string? length))
+                        else if (headers["Content-Length"] is string length)
                             await ReadBody(stream, body, int.Parse(length, System.Globalization.CultureInfo.InvariantCulture), stop.Token);
 
                         if (request[0] == "PUT")
                         {
                             feed.Uploads.Enqueue(request[1]);
-                            if (request[1] != "/symbols" || body.ToArray().AsSpan().IndexOf(files.SymbolBytes) < 0 ||
-                                headers.GetValueOrDefault("X-NuGet-ApiKey") != "synthetic-local-key" ||
-                                headers.GetValueOrDefault("Content-Type")?.StartsWith("multipart/form-data;", StringComparison.Ordinal) != true)
-                                feed.InvalidUploads.Enqueue(request[1]);
+                            bool valid = request[1] == "/symbols" && await HasExactArchive(body.ToArray(), headers["Content-Type"], files) &&
+                                headers["X-NuGet-ApiKey"] == "synthetic-local-key";
+                            bool protocol = HasProtocol(headers.GetValues("X-NuGet-Protocol-Version") ?? []);
+                            if (!valid) feed.InvalidUploads.Enqueue(request[1]);
+                            if (!protocol) feed.InvalidProtocolUploads.Enqueue(request[1]);
+                            if (!valid || !protocol)
+                            {
+                                // Local contract oracle, not a prediction of provider enforcement.
+                                await stream.WriteAsync("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"u8.ToArray(), stop.Token);
+                                continue;
+                            }
                         }
                         // No complete HTTP response is ever sent. Exercise FIN, a
                         // truncated status line, and RST after complete body receipt.
