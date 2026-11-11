@@ -4,13 +4,7 @@ All notable changes to this package will be documented here.
 
 ## [Unreleased]
 
-### Fixed
-
-- Declares package discovery classification in the repository and NuGet tags, with source and archive checks that fail validation when metadata is missing or inconsistent.
-- Uses the existing read-only GitHub Actions token for workflow action commit and metadata verification, avoiding the shared anonymous API quota while retaining fail-closed checks.
-- Rejects malformed workflow verification responses, including parser-wrapped arrays, before PowerShell can enumerate them; only an actual `action.yml` HTTP 404 permits the `action.yaml` fallback.
-
-## [0.1.0] - 2026-10-04
+## [0.1.0] - 2026-11-11
 
 ### Added
 
