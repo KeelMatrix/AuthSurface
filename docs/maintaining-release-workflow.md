@@ -119,6 +119,10 @@ changes and caller failures. They execute the actual workflow run blocks and a
 120-case grid of its job conditions. Workflow mutations enforce routing,
 retention/authentication order, input binding and fatal propagation. No provider
 writes or production login are used by these tests.
+Transport-loss controls close a raw TCP connection after receiving the complete
+upload body, covering clean close, reset and a truncated response header.
+`HttpListener.Abort` is unsuitable for this control because it can emit a
+rejection response on Unix instead of losing the response.
 
 See [NuGet symbol publication](https://learn.microsoft.com/en-us/nuget/create-packages/symbol-packages-snupkg)
 for the v3 requirement and separate symbol validation/indexing, and

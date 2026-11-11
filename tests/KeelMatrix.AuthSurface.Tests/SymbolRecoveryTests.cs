@@ -51,6 +51,8 @@ public sealed class SymbolRecoveryTests
     [InlineData(500, "unknown")]
     [InlineData(503, "unknown")]
     [InlineData(0, "unknown")]
+    [InlineData(-1, "unknown")]
+    [InlineData(-2, "unknown")]
     public async Task RealProtocolRetainsTypedEffectsWithoutApplicationReplay(int status, string effect)
     {
         using var files = await Fixture.Create();
@@ -67,7 +69,7 @@ public sealed class SymbolRecoveryTests
         Assert.Empty(feed.InvalidUploads);
         using JsonDocument receipt = JsonDocument.Parse(File.ReadAllText(files.Receipt));
         Assert.Equal(effect, receipt.RootElement.GetProperty("effect").GetString());
-        if (status == 0) Assert.Equal(JsonValueKind.Null, receipt.RootElement.GetProperty("httpStatus").ValueKind);
+        if (status <= 0) Assert.Equal(JsonValueKind.Null, receipt.RootElement.GetProperty("httpStatus").ValueKind);
         else Assert.Equal(status, receipt.RootElement.GetProperty("httpStatus").GetInt32());
         Assert.Equal(Fixture.Hash(files.SymbolBytes), receipt.RootElement.GetProperty("archiveSha256").GetString());
         Assert.Equal(1, receipt.RootElement.GetProperty("applicationSendCalls").GetInt32());
@@ -379,8 +381,8 @@ public sealed class SymbolRecoveryTests
 
         public void Bind(Feed feed)
         {
-            Contract["serviceIndex"] = feed.Base + "v3/index.json";
-            Contract["symbolEndpoint"] = feed.Base + "symbols";
+            Contract["serviceIndex"] = feed.Source;
+            Contract["symbolEndpoint"] = feed.SymbolEndpoint;
             Contract["primaryUrl"] = feed.Base + "primary.nupkg";
             foreach (var pair in new[] { ("ARCHIVE_SHA256", "archiveSha256"), ("PACKAGE_ID", "packageId"), ("PACKAGE_VERSION", "packageVersion"),
                 ("SOURCE_COMMIT", "sourceCommit"), ("SOURCE_TAG", "sourceTag"), ("SERVICE_INDEX", "serviceIndex") })
@@ -436,7 +438,10 @@ public sealed class SymbolRecoveryTests
     {
         private readonly HttpListener listener = new();
         private readonly Task server;
+        private readonly DroppedResponseServer? dropper;
         public string Base { get; }
+        public string Source { get; }
+        public string SymbolEndpoint { get; }
         public ConcurrentQueue<string> Requests { get; } = new();
         public ConcurrentQueue<string> Uploads { get; } = new();
         public ConcurrentQueue<string> InvalidUploads { get; } = new();
@@ -447,6 +452,9 @@ public sealed class SymbolRecoveryTests
             int port = ((IPEndPoint)socket.LocalEndpoint).Port;
             socket.Stop();
             Base = $"http://127.0.0.1:{port}/";
+            if (status <= 0 || discovery == "index-drop") dropper = new DroppedResponseServer(this, files, status);
+            Source = discovery == "index-drop" ? dropper!.Base + "v3/index.json" : Base + "v3/index.json";
+            SymbolEndpoint = status <= 0 ? dropper!.Base + "symbols" : Base + "symbols";
             listener.Prefixes.Add(Base);
             listener.Start();
             server = Task.Run(async () =>
@@ -461,16 +469,15 @@ public sealed class SymbolRecoveryTests
                     context.Response.StatusCode = 404;
                     if (context.Request.HttpMethod == "GET" && path == "/v3/index.json")
                     {
-                        if (discovery == "index-drop") { context.Response.Abort(); continue; }
                         object? endpoint = discovery switch
                         {
                             "relative" => "/symbols",
                             "null-id" => null,
-                            "array-id" => new[] { Base + "symbols" },
+                            "array-id" => new[] { SymbolEndpoint },
                             "ftp" => "ftp://example.com/symbols",
                             "non-loopback-http" => "http://example.com/symbols",
                             "userinfo" => "https://user@example.com/symbols",
-                            _ => Base + "symbols"
+                            _ => SymbolEndpoint
                         };
                         var resources = new List<object?>();
                         if (discovery != "no-primary") resources.Add(new Dictionary<string, object> { ["@id"] = Base + "primary", ["@type"] = "PackagePublish/2.0.0" });
@@ -511,7 +518,6 @@ public sealed class SymbolRecoveryTests
                             context.Request.Headers["X-NuGet-ApiKey"] != "synthetic-local-key" ||
                             context.Request.ContentType?.StartsWith("multipart/form-data;", StringComparison.Ordinal) != true)
                             InvalidUploads.Enqueue(path);
-                        if (status == 0) { context.Response.Abort(); continue; }
                         context.Response.StatusCode = status;
                         context.Response.Headers["x-ms-request-id"] = status == 201 ? "synthetic-local-key" : "synthetic-request-id";
                         if (status == 301) context.Response.RedirectLocation = Base + "primary";
@@ -521,6 +527,107 @@ public sealed class SymbolRecoveryTests
                 }
             });
         }
-        public void Dispose() { listener.Close(); server.GetAwaiter().GetResult(); }
+        public void Dispose() { listener.Close(); server.GetAwaiter().GetResult(); dropper?.Dispose(); }
+    }
+
+    // HttpListener.Abort can emit its default rejection on Unix. A raw connection
+    // is required to prove a lost response after receipt of the complete body.
+    private sealed class DroppedResponseServer : IDisposable
+    {
+        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource stop = new();
+        private readonly Task server;
+        public string Base { get; }
+
+        public DroppedResponseServer(Feed feed, Fixture files, int mode)
+        {
+            listener.Start();
+            Base = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/";
+            server = Task.Run(async () =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    TcpClient client;
+                    try { client = await listener.AcceptTcpClientAsync(stop.Token); }
+                    catch (Exception ex) when (ex is OperationCanceledException or SocketException or ObjectDisposedException) { break; }
+                    using (client)
+                    {
+                        NetworkStream stream = client.GetStream();
+                        string[] request = (await ReadLine(stream, stop.Token)).Split(' ');
+                        feed.Requests.Enqueue(request[0] + " " + request[1]);
+                        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        string line;
+                        while ((line = await ReadLine(stream, stop.Token)).Length != 0)
+                        {
+                            int colon = line.IndexOf(':', StringComparison.Ordinal);
+                            if (colon <= 0) throw new InvalidDataException("Malformed synthetic HTTP header.");
+                            headers.Add(line[..colon], line[(colon + 1)..].Trim());
+                        }
+                        if (headers.TryGetValue("Expect", out string? expect) && expect == "100-continue")
+                            await stream.WriteAsync("HTTP/1.1 100 Continue\r\n\r\n"u8.ToArray(), stop.Token);
+                        using var body = new MemoryStream();
+                        if (headers.TryGetValue("Transfer-Encoding", out string? encoding) && encoding == "chunked")
+                        {
+                            while (true)
+                            {
+                                int size = Convert.ToInt32((await ReadLine(stream, stop.Token)).Split(';')[0], 16);
+                                if (size == 0)
+                                {
+                                    while ((await ReadLine(stream, stop.Token)).Length != 0) { }
+                                    break;
+                                }
+                                await ReadBody(stream, body, size, stop.Token);
+                                if ((await ReadLine(stream, stop.Token)).Length != 0) throw new InvalidDataException("Malformed synthetic chunk.");
+                            }
+                        }
+                        else if (headers.TryGetValue("Content-Length", out string? length))
+                            await ReadBody(stream, body, int.Parse(length, System.Globalization.CultureInfo.InvariantCulture), stop.Token);
+
+                        if (request[0] == "PUT")
+                        {
+                            feed.Uploads.Enqueue(request[1]);
+                            if (request[1] != "/symbols" || body.ToArray().AsSpan().IndexOf(files.SymbolBytes) < 0 ||
+                                headers.GetValueOrDefault("X-NuGet-ApiKey") != "synthetic-local-key" ||
+                                headers.GetValueOrDefault("Content-Type")?.StartsWith("multipart/form-data;", StringComparison.Ordinal) != true)
+                                feed.InvalidUploads.Enqueue(request[1]);
+                        }
+                        // No complete HTTP response is ever sent. Exercise FIN, a
+                        // truncated status line, and RST after complete body receipt.
+                        if (mode == -1) await stream.WriteAsync("HTTP/1.1 201"u8.ToArray(), stop.Token);
+                        if (mode == -2) client.Client.LingerState = new LingerOption(true, 0);
+                    }
+                }
+            });
+        }
+
+        private static async Task<string> ReadLine(NetworkStream stream, CancellationToken cancellationToken)
+        {
+            var bytes = new List<byte>();
+            byte[] next = new byte[1];
+            while (bytes.Count < 16384)
+            {
+                await stream.ReadExactlyAsync(next, cancellationToken);
+                bytes.Add(next[0]);
+                if (bytes.Count >= 2 && bytes[^2] == 13 && bytes[^1] == 10)
+                    return Encoding.ASCII.GetString(bytes.ToArray(), 0, bytes.Count - 2);
+            }
+            throw new InvalidDataException("Synthetic HTTP line exceeded its bound.");
+        }
+
+        private static async Task ReadBody(NetworkStream stream, MemoryStream body, int size, CancellationToken cancellationToken)
+        {
+            if (size < 0 || body.Length + size > 2097152) throw new InvalidDataException("Synthetic HTTP body exceeded its bound.");
+            byte[] bytes = new byte[size];
+            await stream.ReadExactlyAsync(bytes, cancellationToken);
+            await body.WriteAsync(bytes, cancellationToken);
+        }
+
+        public void Dispose()
+        {
+            stop.Cancel();
+            listener.Stop();
+            server.GetAwaiter().GetResult();
+            stop.Dispose();
+        }
     }
 }
