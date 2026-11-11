@@ -9,6 +9,7 @@ TestResults/
 *.suo
 *.nupkg
 *.snupkg
+!release-assets/0.1.0/KeelMatrix.AuthSurface.0.1.0.snupkg
 *.userprefs
 *.env
 *.env.*

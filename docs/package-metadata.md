@@ -29,7 +29,7 @@ invalid primary counts; and incorrect source repository URLs.
 The existing Windows, Linux, and macOS CI jobs run that full gate and propagate
 failures. `scripts/inspect-package.ps1` uses the same checker for the actual
 `.nupkg` and `.snupkg` nuspecs, including identity, classification, project URL,
-and repository metadata. The tag-triggered release workflow also invokes that
+and repository metadata. The tag-push publication job also invokes that
 inspector before publication.
 
 For focused archive inspection, pass the built artifacts to the checker:

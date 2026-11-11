@@ -2,7 +2,7 @@
 param(
     [ValidateSet('', 'direct', 'mutations', 'full')]
     [string] $ChildCaller = '',
-    [ValidateSet('403', 'commit-singleton', 'yml-empty', 'yml-singleton', 'fallback-singleton')]
+    [ValidateSet('403', 'commit-singleton', 'yml-empty', 'yml-singleton', 'fallback-singleton', 'recovery-route')]
     [string] $ChildCase = '403'
 )
 
@@ -196,6 +196,17 @@ try {
     $env:GITHUB_ACTIONS = 'true'
     if ($ChildCaller) {
         $failurePin = $pins[0]
+        if ($ChildCase -eq 'recovery-route') {
+            # Mutate the actual workflow read by the actual validator/full caller.
+            $releasePath = Join-Path $sourceRoot '.github/workflows/release.yml'
+            function Get-Content {
+                $content = Microsoft.PowerShell.Management\Get-Content @args
+                if ($args -contains $releasePath) {
+                    return $content.Replace("    if: `${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}", '')
+                }
+                return $content
+            }
+        }
         switch ($ChildCase) {
             '403' { $failure = '403'; $failureKind = 'commit' }
             'commit-singleton' { $failure = 'singleton'; $failureKind = 'commit' }
@@ -282,13 +293,17 @@ try {
 
     . (Join-Path $sourceRoot 'build/Invoke-NestedPwsh.ps1')
     foreach ($caller in @('direct', 'mutations', 'full')) {
-        foreach ($case in @('403', 'commit-singleton', 'yml-empty', 'yml-singleton', 'fallback-singleton')) {
+        foreach ($case in @('403', 'commit-singleton', 'yml-empty', 'yml-singleton', 'fallback-singleton', 'recovery-route')) {
             $output = Invoke-NestedPwsh -NoProfile -File $PSCommandPath -ChildCaller $caller -ChildCase $case 2>&1 | Out-String
             $exitCode = $LASTEXITCODE
             Assert-SafeOutput $output
             $kind = switch ($case) { 'yml-empty' { 'action.yml' }; 'yml-singleton' { 'action.yml' }; 'fallback-singleton' { 'action.yaml' }; default { 'commit' } }
             $diagnostic = if ($kind -eq 'commit') { 'Could not verify pinned action commit' } else { 'Could not read pinned action metadata' }
             $expected = @(Get-ExpectedSequence $pins[0] $kind)
+            if ($case -eq 'recovery-route') {
+                $diagnostic = 'Primary tag routing or isolated first-attempt main recovery guard is missing.'
+                $expected = @()
+            }
             $actual = @([regex]::Matches($output, '(?m)^Reached request: ([^\r\n]+)\r?$') | ForEach-Object { $_.Groups[1].Value })
             if ($exitCode -ne 1 -or $output -notlike "*$diagnostic*" -or $output -match 'controlled restore|FORBIDDEN_RESTORE|Workflow action pin contract passed:' -or
                 ($actual -join "`n") -cne ($expected -join "`n")) {
@@ -298,7 +313,7 @@ try {
         }
     }
     $global:LASTEXITCODE = 0
-    Write-Output "Action pin request tests passed: $shapeCount parser-backed raw-shape cases across both representations, all pins and endpoints, object/field/content/runtime controls, actual-404-only fallback, request sequences, authentication/redaction, workflow mutations, and 15 caller propagation cases (exit 1, before restore)."
+    Write-Output "Action pin request tests passed: $shapeCount parser-backed raw-shape cases across both representations, all pins and endpoints, object/field/content/runtime controls, actual-404-only fallback, request sequences, authentication/redaction, workflow mutations, and 18 caller propagation cases (exit 1, before restore)."
 }
 finally {
     $env:GITHUB_TOKEN = $originalToken

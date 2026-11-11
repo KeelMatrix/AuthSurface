@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "archive": "release-assets/0.1.0/KeelMatrix.AuthSurface.0.1.0.snupkg",
+  "archiveSha256": "8bd933ea649f9930bacb29afb98143b83e81cef5b501b36dff67fa7c4a51ea1b",
+  "archiveSize": 25310,
+  "packageId": "KeelMatrix.AuthSurface",
+  "packageVersion": "0.1.0",
+  "sourceCommit": "51605882ad78f4f2b90f0070b3fcc0da2cf39f9d",
+  "sourceTag": "v0.1.0",
+  "repository": "https://github.com/KeelMatrix/AuthSurface",
+  "serviceIndex": "https://api.nuget.org/v3/index.json",
+  "symbolEndpoint": "https://www.nuget.org/api/v2/symbolpackage",
+  "primaryUrl": "https://api.nuget.org/v3-flatcontainer/keelmatrix.authsurface/0.1.0/keelmatrix.authsurface.0.1.0.nupkg",
+  "primarySha256": "a8d6b6ffc169583478a0229ef81b272b70eb3e34042758771a4513f2942570a1",
+  "dllPath": "lib/net8.0/KeelMatrix.AuthSurface.dll",
+  "dllSha256": "370f9088bd42433e0c20b04aeac9c565f4cd5753d79769c23a008484256976a8",
+  "pdbPath": "lib/net8.0/KeelMatrix.AuthSurface.pdb",
+  "pdbSha256": "9083d378699419101c856b6c2236a9af12358168aa684bc64c66e8bb93e792d5",
+  "originalWholeArchiveEquality": "unknown"
+}

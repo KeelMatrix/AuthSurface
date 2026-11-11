@@ -9,7 +9,9 @@ requires a v3 service index advertising both `PackagePublish/2.0.0` and
 `SymbolPackagePublish/4.9.0` with usable endpoints. The production source is
 `https://api.nuget.org/v3/index.json`.
 
-One `dotnet nuget push` uploads the primary and then the associated `.snupkg`.
+One `dotnet nuget push` invocation uploads the primary and then the associated `.snupkg`.
+The native client can retry PUT requests on transient errors or lost responses;
+one invocation is not an at-most-once HTTP submission guarantee.
 Do not set `--symbol-source` to the raw symbol upload URL: the .NET 8 client
 selects legacy `.symbols.nupkg` lookup and can exit successfully without sending
 the `.snupkg`. Do not add a second symbol push to a successful paired upload.
@@ -41,18 +43,87 @@ Complete validation runs these tests on Windows, Linux, and macOS. A successful
 workflow or accepted upload alone does not establish public availability or
 symbol indexing.
 
-For a symbol-only recovery, use the original retained `.snupkg` where available.
-If it is unavailable, rebuild with the original tagged source, SDK, and operating
-system (generated compiler inputs can differ across platforms), and compare each
-PDB's portable content ID and checksum with the actual public DLL's CodeView and
-PDB-checksum debug entries. Also verify the package ID/version and SourceLink
-revision. Stop if the public DLL cannot be retrieved or any identity differs.
-Only after independent verification and separate publication authorization may
-an explicit `.snupkg` be pushed through the v3 source; do not send the primary
-again, move the tag, or claim rebuilt archive-byte equivalence.
+## Guarded 0.1.0 symbols recovery
+
+`scripts/recover-symbols.ps1` owns the recovery command behavior. Its exact
+artifact and provider identity contract is
+`release-assets/0.1.0/symbol-recovery.json`. The adjacent committed `.snupkg` is
+the durable recovery input: **25310 bytes**, SHA256
+`8bd933ea649f9930bacb29afb98143b83e81cef5b501b36dff67fa7c4a51ea1b`.
+Its PDB has been checked against the actual public DLL's portable identity,
+deterministic checksum and original SourceLink. Original whole-archive equality
+is **unknown**. Do not replace this archive with a new build.
+
+The separate `recover-symbols` job in `release.yml` accepts `workflow_dispatch`
+on `main`, run attempt 1 only. The primary `release` job requires a tag-push
+event; manual recovery cannot enter the primary build/pack/push path. Recovery
+does not rebuild, republish the primary, move a tag or change a package version.
+The workflow filename and existing Trusted Publishing identity are preserved.
+The route requires independent review and separate execution authorization.
+Committing it or passing CI does not execute or authorize recovery.
+
+Every dispatch input is required, without a default:
+
+| Input | Required value |
+| --- | --- |
+| `candidate_commit` | Exact reviewed recovery commit, equal to the dispatched checkout SHA |
+| `archive_sha256` | Exact archive hash above |
+| `package_id` | `KeelMatrix.AuthSurface` |
+| `package_version` | `0.1.0` |
+| `source_commit` | `51605882ad78f4f2b90f0070b3fcc0da2cf39f9d` |
+| `source_tag` | `v0.1.0`, still resolving to that shipping commit |
+| `service_index` | `https://api.nuget.org/v3/index.json` |
+
+`Prepare` requires no publishing credential. It binds the inputs, repository,
+event/ref/attempt and checkout, then checks the exact archive, nuspec ID/version
+and source, and PDB hash. It discovers `SymbolPackagePublish/4.9.0` and requires
+the contract's exact endpoint; absent, malformed, conflicting or unexpected
+discovery fails. It downloads the existing public primary read-only and verifies
+its signed archive and DLL hashes. No arbitrary download URL is a dispatch input.
+Before login, the workflow retains the exact symbols, contract, SHA256SUMS and
+preparation receipt for 90 days with missing-file failure. Failed preparation or
+retention blocks authentication and submission.
+
+`Submit` revalidates retained bytes and the same preparation/run binding. It
+uses only the temporary login credential. Recovery does **not** use the native
+push client's retry policy or its potentially silent missing-service behavior.
+It sends the documented modern symbol-publish multipart body to the already
+verified endpoint with a fresh .NET HTTP client, HTTP/1.1, redirects disabled,
+no application retries and a 60-second timeout. There is one `SendAsync` call;
+there is no at-most-once provider-effect guarantee under transport uncertainty.
+The primary upload service is never used by this command.
+
+An intent receipt is written before the send. Only an observed HTTP **201**
+records `accepted` and permits success. HTTP 200/202/204 do not establish
+acceptance. The receipt records archive/hash/source/run/endpoint, status,
+timestamps and safe provider request/date metadata; it excludes credentials and
+provider response bodies. HTTP 409 records `conflict`; ordinary 400/401/403/404/413
+responses record `rejected`. Other statuses (including 429/5xx), dropped responses,
+timeouts or interruptions leave `unknown`. Each nonaccepted outcome fails the
+caller. The workflow attempts receipt retention after any prepared run, including
+failure. Missing receipts or interrupted retention require reconciliation.
+
+There is no automatic resubmission. A retained intent blocks a second local
+submit; workflow reruns are excluded. Serialization prevents simultaneous jobs
+but does not make a new dispatch safe or authorized. Preserve partial/unknown
+effects, check current provider state, and obtain separate authority before any
+new attempt. A 201 receipt proves that the bound endpoint acknowledged the
+verified upload. It does not prove later symbol validation, indexing, debugger
+download, or equality to the unavailable original whole archive. Those remain
+separate acceptance checks.
+
+The real loopback protocol tests in `SymbolRecoveryTests` cover byte-exact
+symbol-only uploads, discovery shapes, identity/input mismatches, accepted,
+rejected, conflict, transient and transport-unknown effects, retained-evidence
+changes and caller failures. They execute the actual workflow run blocks and a
+120-case grid of its job conditions. Workflow mutations enforce routing,
+retention/authentication order, input binding and fatal propagation. No provider
+writes or production login are used by these tests.
 
 See [NuGet symbol publication](https://learn.microsoft.com/en-us/nuget/create-packages/symbol-packages-snupkg)
-for the v3 requirement and separate symbol validation/indexing.
+for the v3 requirement and separate symbol validation/indexing, and
+[the symbol-publish API](https://learn.microsoft.com/en-us/nuget/api/symbol-package-publish-resource)
+for modern discovery, request format and HTTP acceptance semantics.
 
 ## Maintain action pins
 
@@ -145,11 +216,13 @@ unparsed dictionary success, scalar and required-field failures, and true-404
 valid and invalid fallback. They assert reached targets and exact request sequences,
 authentication and request bounds, anonymous quota exhaustion, provider errors,
 redacted diagnostics, content decoding, and supported/deprecated runtimes.
-Fifteen child cases prove exit 1 from direct validation, mutation tests, and
+Eighteen child cases prove exit 1 from direct validation, mutation tests, and
 the full validation entry point before controlled restore for HTTP 403, commit
 singleton arrays, empty-array and singleton successful `action.yml`, and singleton
-fallback. An unexpectedly returning child exits zero; a defensive restore sentinel
+fallback, plus a missing primary event guard. The routing control fails before
+any provider lookup in all three callers. An unexpectedly returning child exits zero; a defensive restore sentinel
 exits 86. Both fail the harness, as do missing diagnostics, changed request prefixes,
 private output, or a success message on rejection.
 The CI workflow runs both the validator and the complete repository validation on
-Windows, Linux, and macOS. The release workflow remains tag-triggered only.
+Windows, Linux, and macOS. Primary publication remains tag-triggered; the
+isolated manual job is restricted to the exact symbols recovery contract.

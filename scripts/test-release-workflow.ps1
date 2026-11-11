@@ -33,6 +33,56 @@ function Assert-Rejected([string] $Name, [scriptblock] $Mutation) {
 
 & $validator -Root $sourceRoot
 
+foreach ($line in @(
+    "    if: `${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}",
+    "    if: `${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}",
+    '      RECOVERY_ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}',
+    '      RECOVERY_CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}',
+    '      cancel-in-progress: false',
+    "        if: `${{ always() && steps.recovery-preflight.outcome == 'success' }}"
+)) {
+    Assert-Rejected "missing recovery routing/binding: $line" {
+        param($testRoot)
+        $path = Join-Path $testRoot '.github/workflows/release.yml'
+        $workflow = (Get-Content -LiteralPath $path -Raw).Replace($line, '')
+        Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
+    }
+}
+foreach ($stepName in @('Prepare exact symbols recovery', 'Retain verified recovery archive before login',
+    'Authenticate symbols recovery to NuGet.org', 'Submit exact symbols only', 'Retain recovery effect receipt')) {
+    foreach ($bypass in @('continue-on-error: true', 'if: always()')) {
+        Assert-Rejected "recovery step bypass: $stepName / $bypass" {
+            param($testRoot)
+            $path = Join-Path $testRoot '.github/workflows/release.yml'
+            $workflow = (Get-Content -LiteralPath $path -Raw).Replace("- name: $stepName", "- name: $stepName`n        $bypass")
+            Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
+        }
+    }
+}
+foreach ($mode in @('Prepare', 'Submit')) {
+    Assert-Rejected "recovery caller ignores native exit: $mode" {
+        param($testRoot)
+        $path = Join-Path $testRoot '.github/workflows/release.yml'
+        $workflow = Get-Content -LiteralPath $path -Raw
+        $workflow = [regex]::Replace($workflow, "(?m)(-Mode $mode -OutputDirectory [^\r\n]+\r?\n)          if \([^\r\n]+", '$1')
+        Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
+    }
+}
+Assert-Rejected 'recovery authenticates before durable retention' {
+    param($testRoot)
+    $path = Join-Path $testRoot '.github/workflows/release.yml'
+    $workflow = Get-Content -LiteralPath $path -Raw
+    $retention = [regex]::Match($workflow, '(?ms)^      - name: Retain verified recovery archive before login.*?(?=^      - name:)').Value
+    $workflow = $workflow.Replace($retention, '').Replace('      - name: Submit exact symbols only', $retention + '      - name: Submit exact symbols only')
+    Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
+}
+Assert-Rejected 'recovery reaches primary publication' {
+    param($testRoot)
+    $path = Join-Path $testRoot '.github/workflows/release.yml'
+    $workflow = (Get-Content -LiteralPath $path -Raw).Replace('-Mode Submit', '-Mode Submit; ./scripts/push-release-package.ps1')
+    Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
+}
+
 $releaseWorkflow = Get-Content -LiteralPath (Join-Path $sourceRoot '.github/workflows/release.yml') -Raw
 $releaseJobTimeout = [regex]::Match(
     $releaseWorkflow,

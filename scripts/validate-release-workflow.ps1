@@ -28,6 +28,13 @@ if (-not (Test-Path -LiteralPath $ciWorkflowPath -PathType Leaf)) {
 $releaseWorkflow = Get-Content -LiteralPath $releaseWorkflowPath -Raw
 $ciWorkflow = Get-Content -LiteralPath $ciWorkflowPath -Raw
 
+& (Join-Path $PSScriptRoot 'check-recovery-workflow.ps1') -Root $root
+if ($LASTEXITCODE -ne 0) { throw 'Recovery workflow contract failed.' }
+# Existing paired-publication checks below apply to the primary job and tag trigger.
+# Recovery is separately checked above; action inventory still covers the whole file.
+$releaseWorkflow = [regex]::Replace($releaseWorkflow, '(?ms)^  workflow_dispatch:.*?(?=^\S)', '')
+$releaseWorkflow = [regex]::Replace($releaseWorkflow, '(?ms)^  recover-symbols:.*\z', '')
+
 if ($ciWorkflow -notmatch '(?ms)uses:\s+actions/checkout@[0-9a-f]{40}\s*\r?\n\s+with:\s*\r?\n\s+fetch-depth:\s+0' -or
     $releaseWorkflow -notmatch '(?ms)uses:\s+actions/checkout@[0-9a-f]{40}\s*\r?\n\s+with:\s*\r?\n\s+fetch-depth:\s+0') {
     throw 'CI and release workflows must fetch complete history for the repository-hygiene history claim.'

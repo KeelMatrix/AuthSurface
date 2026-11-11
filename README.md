@@ -112,7 +112,7 @@ AuthSurface targets `net8.0` only. It records runtime authorization metadata and
 - [Endpoint identity](docs/endpoint-identity.md)
 - [Privacy](PRIVACY.md)
 - [Developer guide](AGENTS.md)
-- [Release workflow and action verification](docs/maintaining-release-workflow.md)
+- [Release workflow, guarded symbol recovery and action verification](docs/maintaining-release-workflow.md)
 - [Package discovery metadata](docs/package-metadata.md)
 
 ## Troubleshooting

@@ -4,12 +4,43 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      candidate_commit:
+        description: Exact reviewed recovery workflow commit
+        required: true
+        type: string
+      archive_sha256:
+        description: Exact preserved symbol archive SHA256
+        required: true
+        type: string
+      package_id:
+        description: Package ID from the recovery contract
+        required: true
+        type: string
+      package_version:
+        description: Original published version
+        required: true
+        type: string
+      source_commit:
+        description: Immutable original shipping source commit
+        required: true
+        type: string
+      source_tag:
+        description: Immutable original shipping tag
+        required: true
+        type: string
+      service_index:
+        description: Approved modern NuGet service index
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   release:
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -123,3 +154,68 @@ jobs:
           $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts/packages'
           & .\scripts\push-release-package.ps1 -PackagePath (Join-Path $output "KeelMatrix.AuthSurface.${env:RELEASE_VERSION}.nupkg")
           if ($LASTEXITCODE -ne 0) { throw "Package and symbol publication failed with exit code $LASTEXITCODE." }
+
+  recover-symbols:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: authsurface-symbol-recovery-0.1.0
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      KEELMATRIX_NO_TELEMETRY: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DO_NOT_TRACK: '1'
+      RECOVERY_CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+      RECOVERY_ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+      RECOVERY_PACKAGE_ID: ${{ inputs.package_id }}
+      RECOVERY_PACKAGE_VERSION: ${{ inputs.package_version }}
+      RECOVERY_SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RECOVERY_SOURCE_TAG: ${{ inputs.source_tag }}
+      RECOVERY_SERVICE_INDEX: ${{ inputs.service_index }}
+    steps:
+      - name: Check out recovery source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Prepare exact symbols recovery
+        id: recovery-preflight
+        shell: pwsh
+        run: |
+          & ./scripts/recover-symbols.ps1 -Mode Prepare -OutputDirectory ./artifacts/symbol-recovery
+          if ($LASTEXITCODE -ne 0) { throw "Recovery preparation failed with exit code $LASTEXITCODE." }
+
+      - name: Retain verified recovery archive before login
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: symbol-recovery-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/symbol-recovery/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Authenticate symbols recovery to NuGet.org
+        id: recovery-login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841
+        with:
+          user: dmitriyzen
+
+      - name: Submit exact symbols only
+        shell: pwsh
+        env:
+          NUGET_PUSH_TOKEN: ${{ steps.recovery-login.outputs.NUGET_API_KEY }}
+        run: |
+          & ./scripts/recover-symbols.ps1 -Mode Submit -OutputDirectory ./artifacts/symbol-recovery
+          if ($LASTEXITCODE -ne 0) { throw "Symbol recovery failed with exit code $LASTEXITCODE. Preserve effects; do not replay." }
+
+      - name: Retain recovery effect receipt
+        if: ${{ always() && steps.recovery-preflight.outcome == 'success' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: symbol-recovery-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/symbol-recovery/
+          if-no-files-found: error
+          retention-days: 90
