@@ -32,6 +32,14 @@ try {
         Set-Content -LiteralPath (Join-Path $testRoot "scripts/$name") -Value '$global:LASTEXITCODE = 0'
     }
     Set-Content -LiteralPath (Join-Path $testRoot 'build/Test-NestedPwshLaunch.ps1') -Value '$global:LASTEXITCODE = 0'
+    # Build-input isolation has its own real compiler controls. Reach the source gate here.
+    Set-Content -LiteralPath (Join-Path $testRoot 'build/Invoke-PublicPackageSession.ps1') -Value @'
+function Invoke-PublicPackageSession($Root, $Solution, $OutputDirectory, $ExpectedCommit, $Version, $Action) {
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    & $Action ([pscustomobject]@{ Output = $OutputDirectory; RepositoryRoot = $Root; Solution = $Solution; Properties = @() })
+    if ($LASTEXITCODE -ne 0) { throw 'Source fixture preparation failed.' }
+}
+'@
     Set-Content -LiteralPath (Join-Path $testRoot 'scripts/inspect-package.ps1') -Value @'
 & (Join-Path $env:AUTHSURFACE_SOURCE_ROOT 'scripts/inspect-package.ps1') -PackagePath $env:AUTHSURFACE_SOURCE_PRIMARY -SymbolPackagePath $env:AUTHSURFACE_SOURCE_SYMBOLS -RepositoryRoot $env:AUTHSURFACE_SOURCE_ROOT -ExpectedCommit $env:AUTHSURFACE_SOURCE_COMMIT -VerifierPath (Join-Path $env:AUTHSURFACE_SOURCE_ROOT "build/SourceProvenance/bin/$env:AUTHSURFACE_SOURCE_CONFIGURATION/net8.0/SourceProvenance.dll")
 '@
@@ -67,7 +75,7 @@ function dotnet {
             if ($caller -eq 'release-step') {
                 # Execute the actual committed release preparation block, substituting workflow expressions only.
                 $workflow = Get-Content -Raw -LiteralPath (Join-Path $root '.github/workflows/release.yml')
-                $step = [regex]::Match($workflow, '(?ms)^      - name: Validate exact package set and contents\r?\n.*?^        run: \|\r?\n(?<code>.*?)(?=^      - name:)').Groups['code'].Value
+                $step = [regex]::Match($workflow, '(?ms)^      - name: Prepare public locked package pair\r?\n.*?^        run: \|\r?\n(?<code>.*?)(?=^      - name:)').Groups['code'].Value
                 if (-not $step) { throw 'Release preparation block not found.' }
                 $step = [regex]::Replace($step, '(?m)^          ', '')
                 $step = $step.Replace("'`${{ github.sha }}'", '$env:AUTHSURFACE_SOURCE_COMMIT')
@@ -92,7 +100,7 @@ Set-Location $PSScriptRoot
             if ($code -eq 0 -or $text -notlike "*$expected*" -or $text -like '*UNREACHABLE_SUCCESS_LOGIN_PUSH*' -or $text -like '*Packaged source provenance passed*') {
                 throw "Source failure escaped $caller ($mode, exit $code): $text"
             }
-            if (Test-Path -LiteralPath (Join-Path $testRoot 'artifacts/packages/SHA256SUMS')) { throw 'Release preparation reached the hash/retention prerequisite.' }
+            if (Test-Path -LiteralPath (Join-Path $testRoot 'artifacts/build-evidence/SHA256SUMS')) { throw 'Release preparation reached the hash/retention prerequisite.' }
             Write-Output "Source provenance: $caller / $mode rejected, exit $code; later success/login/push unreachable."
             $count++
         }

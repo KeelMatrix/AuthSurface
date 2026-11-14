@@ -84,6 +84,21 @@ Assert-Rejected 'recovery reaches primary publication' {
 }
 
 $releaseWorkflow = Get-Content -LiteralPath (Join-Path $sourceRoot '.github/workflows/release.yml') -Raw
+foreach ($text in @('. ./build/Invoke-PublicPackageSession.ps1', 'Invoke-PublicPackageSession -Root', '--no-incremental', 'Set-PublicPackageInspection $session')) {
+    Assert-Rejected "missing public session control: $text" {
+        param($testRoot)
+        $path = Join-Path $testRoot '.github/workflows/release.yml'
+        Set-Content -LiteralPath $path -Value ((Get-Content -LiteralPath $path -Raw).Replace($text, 'removed')) -Encoding utf8
+    }
+}
+foreach ($boundary in @('Build','Test','Pack','Public preparation')) {
+    Assert-Rejected "missing fatal $boundary check" {
+        param($testRoot)
+        $path = Join-Path $testRoot '.github/workflows/release.yml'
+        $workflow = [regex]::Replace((Get-Content -LiteralPath $path -Raw), ('(?m)^ +if \(\$LASTEXITCODE -ne 0\) \{ throw "' + [regex]::Escape($boundary) + ' failed[^\r\n]+'), '')
+        Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
+    }
+}
 $releaseJobTimeout = [regex]::Match(
     $releaseWorkflow,
     '(?ms)^  release:\s*\r?\n(?:(?!^  \S).)*?^    timeout-minutes:\s+(?<minutes>\S+)\s*$')
@@ -92,7 +107,7 @@ if (-not $releaseJobTimeout.Success -or $releaseJobTimeout.Groups['minutes'].Val
 }
 # Native protocol behavior and real child exit codes are exercised by
 # ReleasePublicationTests; these mutations cover the workflow's call site.
-foreach ($stepName in @('Push package', 'Retain inspected release archives', 'Validate exact package set and contents')) {
+foreach ($stepName in @('Push package', 'Retain inspected release archives', 'Prepare public locked package pair')) {
     Assert-Rejected "ignored failure for $stepName" {
         param($testRoot)
         $path = Join-Path $testRoot '.github/workflows/release.yml'
@@ -111,28 +126,28 @@ foreach ($text in @('-RepositoryRoot $env:GITHUB_WORKSPACE', '-ExpectedCommit ''
 Assert-Rejected 'missing package inspection exit check' {
     param($testRoot)
     $path = Join-Path $testRoot '.github/workflows/release.yml'
-    $workflow = [regex]::Replace((Get-Content -Raw -LiteralPath $path), '(?m)^          if \(\$LASTEXITCODE -ne 0\) \{ throw "Package inspection failed[^\r\n]+', '')
+    $workflow = [regex]::Replace((Get-Content -Raw -LiteralPath $path), '(?m)^ +if \(\$LASTEXITCODE -ne 0\) \{ throw "Package inspection failed[^\r\n]+', '')
     Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
 }
 Assert-Rejected 'package inspection bypass condition' {
     param($testRoot)
     $path = Join-Path $testRoot '.github/workflows/release.yml'
-    $workflow = (Get-Content -Raw -LiteralPath $path).Replace('- name: Validate exact package set and contents', "- name: Validate exact package set and contents`n        if: always()")
+    $workflow = (Get-Content -Raw -LiteralPath $path).Replace('- name: Prepare public locked package pair', "- name: Prepare public locked package pair`n        if: always()")
     Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
 }
 Assert-Rejected 'package inspection before pack' {
     param($testRoot)
     $path = Join-Path $testRoot '.github/workflows/release.yml'
     $workflow = Get-Content -Raw -LiteralPath $path
-    $inspection = [regex]::Match($workflow, '(?ms)^      - name: Validate exact package set and contents.*?(?=^      - name:)').Value
-    $workflow = $workflow.Replace($inspection, '').Replace('      - name: Pack', $inspection + '      - name: Pack')
+    $inspection = [regex]::Match($workflow, '(?m)^ +& \.\\scripts\\inspect-package\.ps1[^\r\n]+\r?\n +if \(\$LASTEXITCODE[^\r\n]+').Value
+    $workflow = $workflow.Replace($inspection, '').Replace('              dotnet pack', $inspection + "`n              dotnet pack")
     Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
 }
 Assert-Rejected 'duplicate package inspection' {
     param($testRoot)
     $path = Join-Path $testRoot '.github/workflows/release.yml'
     $workflow = Get-Content -Raw -LiteralPath $path
-    $inspection = [regex]::Match($workflow, '(?ms)^      - name: Validate exact package set and contents.*?(?=^      - name:)').Value
+    $inspection = [regex]::Match($workflow, '(?ms)^      - name: Prepare public locked package pair.*?(?=^      - name:)').Value
     Set-Content -LiteralPath $path -Value ($workflow.Replace($inspection, $inspection + $inspection)) -Encoding utf8
 }
 Assert-Rejected 'duplicate publication call' {
@@ -142,7 +157,7 @@ Assert-Rejected 'duplicate publication call' {
     $workflow += "`n      - name: Duplicate publication`n        run: pwsh ./scripts/push-release-package.ps1`n"
     Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
 }
-foreach ($text in @('SHA256SUMS', 'if-no-files-found: error', 'path: artifacts/packages/', 'retention-days: 90')) {
+foreach ($text in @('SHA256SUMS', 'if-no-files-found: error', 'artifacts/packages/', 'artifacts/build-evidence/', 'retention-days: 90')) {
     Assert-Rejected "missing archive evidence: $text" {
         param($testRoot)
         $path = Join-Path $testRoot '.github/workflows/release.yml'
@@ -168,7 +183,7 @@ Assert-Rejected 'missing publication exit check' {
     param($testRoot)
     $path = Join-Path $testRoot '.github/workflows/release.yml'
     $workflow = Get-Content -LiteralPath $path -Raw
-    $workflow = [regex]::Replace($workflow, '(?m)^          if \(\$LASTEXITCODE -ne 0\) \{ throw "Package and symbol publication[^\r\n]+', '')
+    $workflow = [regex]::Replace($workflow, '(?m)^ +if \(\$LASTEXITCODE -ne 0\) \{ throw "Package and symbol publication[^\r\n]+', '')
     Set-Content -LiteralPath $path -Value $workflow -Encoding utf8
 }
 

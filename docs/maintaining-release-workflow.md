@@ -1,6 +1,6 @@
 # Maintaining the release workflow
 
-This document owns the packaged source-provenance contract and explains release
+This document owns the controlled build-input/session and packaged source-provenance contracts and explains release
 inspection, publication, historical symbol recovery, and workflow maintenance.
 
 ## Candidate version
@@ -11,8 +11,8 @@ also checks it against the explicit tag version. `PackageVersion` follows
 `Version`, `FileVersion` identifies the build, and `AssemblyVersion` stays at
 `0.1.0.0` for patch compatibility.
 
-The current **0.1.1 candidate is unpublished**. Its only consumer-facing change
-from public 0.1.0 is the debugging correction described below. The public API,
+The current **0.1.1 candidate is unpublished**. It includes the debugging correction
+described below and documents installation from the candidate feed with public dependencies. The public API,
 baseline format, dependencies, and runtime behavior are unchanged. Candidate
 installation examples use a local feed. The changelog intentionally remains
 unreleased and undated; release mode rejects it until separately finalized.
@@ -20,6 +20,68 @@ Finalization requires a truthful dated entry, verification of its resulting
 commit, and separate release authorization before any tag or publication.
 The initial 0.1.0 entry permits only `Added`; later entries use the applicable
 Keep a Changelog categories, including `Fixed` for this correction.
+
+## Controlled public build inputs
+
+Accepted package preparation uses `build/Invoke-PublicPackageSession.ps1` through
+the complete validator, release rehearsal, or the primary release preparation
+block. Each invocation creates new private package, HTTP-cache, scratch and staging
+directories. It never clears or repairs a developer's shared caches. Inherited
+package/fallback paths cannot supply compiler inputs. The scope restores every
+changed environment variable and working directory and removes only its owned
+temporary directory on success, native failure or script exception.
+Existing directory aliases are resolved before choosing the repository, solution
+and temporary paths. In particular, macOS `/var` and `/private/var` must not create
+two restore identities for one project. Callers compile the session's canonical
+solution path; regression fixtures also exercise a directory alias.
+
+`Directory.Packages.props` owns declared dependency versions/ranges; standard
+committed `packages.lock.json` files own the resolved build graph, including the
+dependency-free projects. These library-build locks do not constrain consumers.
+Restore uses the explicit public-only repository `NuGet.config`, fresh private
+`--packages`, `--locked-mode --force`, `RestoreNoHttpCache=true`, empty fallback
+and additional-source properties, the explicit nuget.org source, and fatal source
+errors. Intentional lock updates use a separate fresh public restore with
+`--force-evaluate`; accepted sessions never refresh locks to pass a mismatch.
+
+Build forces compilation with `--no-restore --no-incremental`; test and pack use
+`--no-build --no-restore`. All share the same private restored directory,
+configuration and version through inspection, audit and nested gates. Staged
+archives are promoted only after exact-pair/source inspection and all gates pass.
+The session rejects changed assets, locks, config, dependency contents or an
+archive pair changed after inspection. Prior archives cannot supply a new success
+receipt. `Record-CompilerInputs.targets` captures the actual C# reference paths.
+
+Durable receipts in `artifacts/build-evidence/` bind the exact commit, SDK/NuGet,
+config/lock and before/after assets hashes, dependency archive hashes, NuGet content
+hashes, archive-checked extracted build assets, compiler reference paths/hashes,
+and the exact resulting nupkg/snupkg SHA-256 pair. The shipping dependency archive
+and actual compiler DLL bytes are retained alongside the receipt. Raw signed-archive hashes and
+NuGet content hashes have distinct meanings; the SDK's NuGet implementation
+computes the latter. Keep the receipt with its actual archives. Release retention
+includes these receipts before login, outside the exact publishable pair.
+
+Focused raw `dotnet build/test/pack` and standalone inspection remain useful for
+development. An accepted build-input handoff requires the controlled session and
+correlated receipt; standalone source inspection establishes its own source/pair
+contract. `scripts/test-build-inputs.ps1` uses tiny real compiler/test/pack fixtures
+through all three actual preparation callers, a valid same-version dependency
+variant, native/exception failures, content mutations and environment cleanup.
+
+The authoritative consumer installation section is
+[`src/KeelMatrix.AuthSurface/README.md`](../src/KeelMatrix.AuthSurface/README.md),
+packed as archive-root `README.md`; the root README repeats it.
+`scripts/consumer-smoke.ps1` loads the XML and literal commands from both the root
+README and the supplied archive's README stream, changing only the local feed
+location. Exact-ID source mapping selects the candidate and the public wildcard
+selects dependencies. The quoted `[0.1.1]` version range requires that exact version;
+plain `0.1.1` is a minimum and can select a higher local version when the requested
+one is absent. Its independent private caches prevent stale same-version
+packages from satisfying restore. Cold, verified-warm and fresh runtime restores
+execute the same commands; runtime uses `--no-restore`. Receipts in
+`artifacts/consumer-evidence/` bind supplied/consumed archive and assets hashes.
+Regression controls cover missing/local-only/lower-only/higher-only version feeds and paths with
+spaces and XML-sensitive characters. They do not purge a user's global cache.
 
 ## Packaged source provenance
 
@@ -116,7 +178,8 @@ state before any separately authorized recovery. Never replay the whole release
 or use `--skip-duplicate` to hide a partial publication.
 
 After exact-set/archive inspection, the workflow logs each archive's SHA-256 and
-writes `SHA256SUMS`. It retains both archives and that manifest as a GitHub Actions
+writes `artifacts/build-evidence/SHA256SUMS`. It retains both archives, the build-input
+receipts and that manifest as a GitHub Actions
 artifact for 90 days **before** OIDC authentication. Retention failure stops
 publication. Save the artifact ID, URL, digest, archive hashes, and expiry with
 the execution evidence; download recovery files before expiry. The artifact
@@ -136,6 +199,9 @@ symbol rejection, duplicate conflicts, and child-process failure propagation.
 Complete validation runs these tests on Windows, Linux, and macOS. A successful
 workflow or accepted upload alone does not establish public availability or
 symbol indexing.
+The local feed binds directly to a kernel-selected loopback port through Kestrel
+and holds that binding until disposal. It does not release a reserved port before
+the HTTP server starts; concurrent feed instances verify distinct live bindings.
 
 ## Guarded 0.1.0 symbols recovery
 

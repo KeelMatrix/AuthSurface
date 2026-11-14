@@ -4,13 +4,45 @@ AuthSurface tests the runtime ASP.NET Core authorization surface. It discovers e
 
 ## Install
 
-**0.1.1 is an unpublished candidate.** Build and pack this checkout, then use
-the local package feed below (adjust its path for your consumer project).
-The published version remains 0.1.0.
+**0.1.1 is an unpublished candidate.** The published version remains 0.1.0.
+Build and pack this checkout with `pwsh ./scripts/validate.ps1 -Configuration Release`.
+In your consumer project directory, save this as `NuGet.config`. Adjust only the
+`authsurface-candidate` feed value to your built `artifacts/package` folder;
+relative paths are resolved from this config file. Keep both sources and mappings.
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="authsurface-candidate" value="../AuthSurface/artifacts/package" />
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+  </packageSources>
+  <fallbackPackageFolders><clear /></fallbackPackageFolders>
+  <packageSourceMapping>
+    <packageSource key="authsurface-candidate">
+      <package pattern="KeelMatrix.AuthSurface" />
+    </packageSource>
+    <packageSource key="nuget.org">
+      <package pattern="*" />
+    </packageSource>
+  </packageSourceMapping>
+</configuration>
+```
+
+Run these commands from that consumer project directory:
 
 ```powershell
-dotnet add package KeelMatrix.AuthSurface --version 0.1.1 --source ./artifacts/package
+dotnet add package KeelMatrix.AuthSurface --version '[0.1.1]' --no-restore
+dotnet restore --configfile ./NuGet.config
 ```
+
+The bracketed version is an exact NuGet range; a feed containing only another
+version fails restore. The first command adds the package reference. Restore obtains this candidate
+from the local feed and its dependencies from nuget.org. For a stale same-version
+candidate in your global cache, set `NUGET_PACKAGES` to a separate empty directory
+before restore; you do not need to clear your shared cache. Return to the consumer
+directory before repeating these commands so the project and config are selected.
 
 ## Quick Start
 

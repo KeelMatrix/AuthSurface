@@ -60,7 +60,9 @@ if ($null -eq $telemetryVersion -or [string]$telemetryVersion.Version -ne '[0.1.
 }
 
 foreach ($readme in @($rootReadme, $packageReadme)) {
-    if ($readme -notmatch [regex]::Escape("dotnet add package KeelMatrix.AuthSurface --version $Version")) {
+    $examples = @([regex]::Matches($readme, '(?m)^\s*dotnet add package KeelMatrix.AuthSurface --version (?<token>\S+)'))
+    $allowed = @($Version, "[$Version]", "'[$Version]'", "`"[$Version]`"")
+    if ($examples.Count -eq 0 -or @($examples | Where-Object { $allowed -cnotcontains $_.Groups['token'].Value }).Count) {
         throw "An install example does not use release version '$Version'."
     }
 }

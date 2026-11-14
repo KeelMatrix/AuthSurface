@@ -18,6 +18,16 @@ pwsh ./scripts/validate.ps1 -Configuration Release
 
 Use focused `dotnet test` or `dotnet build` commands while developing, then run the validation script once after the implementation is final. The script performs controlled restore, static checks, Release build, tests, package inspection, vulnerability checks, and package-consumer smoke.
 
+Accepted archives come from a private public-only locked dependency session kept
+alive through compilation, tests, pack and inspection. Raw inner-loop commands
+do not establish this build-input guarantee. Start preparation changes with
+`pwsh ./scripts/test-build-inputs.ps1`; start install changes with
+`pwsh ./scripts/test-consumer-smoke.ps1 -PackagePath <actual-nupkg>`.
+The build-input/session contract is owned by `docs/maintaining-release-workflow.md`;
+the packed project's README owns the literal consumer installation sequence.
+Keep standard project lock files current with intentional fresh public restores.
+Do not refresh locks during accepted validation or modify shared package caches.
+
 For source-provenance changes, start with `dotnet test tests/KeelMatrix.AuthSurface.Tests -c Release --filter FullyQualifiedName~SourceProvenanceTests`.
 Package inspection checks the exact DLL/PDB pair and every document against the
 explicit checkout commit or valid embedded source; it also runs fatal caller

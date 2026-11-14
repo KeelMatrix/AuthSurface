@@ -2,9 +2,14 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace KeelMatrix.AuthSurface.Tests;
@@ -14,6 +19,29 @@ public sealed class ReleasePublicationTests
     private static readonly string[] pairedUploads = ["/primary/", "/symbols/"];
     private static readonly string[] primaryUpload = ["/primary/"];
     private static readonly string[] symbolUpload = ["/symbols/"];
+
+    [Fact]
+    public async Task ConcurrentLocalFeedsOwnDistinctLivePorts()
+    {
+        using var files = new Packages();
+        var feeds = new ConcurrentBag<LocalFeed>();
+        try
+        {
+            await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() => feeds.Add(new LocalFeed(files)))));
+            Assert.Equal(8, feeds.Select(feed => feed.Base).Distinct(StringComparer.Ordinal).Count());
+            using var client = new HttpClient();
+            foreach (LocalFeed feed in feeds)
+            {
+                string index = await client.GetStringAsync(feed.Source);
+                Assert.Contains(feed.Base + "primary/", index, StringComparison.Ordinal);
+                Assert.Contains(feed.Base + "symbols/", index, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            foreach (LocalFeed feed in feeds) { feed.Dispose(); }
+        }
+    }
 
     [Theory]
     [InlineData(201, 201)]
@@ -177,8 +205,7 @@ public sealed class ReleasePublicationTests
 
     private sealed class LocalFeed : IDisposable
     {
-        private readonly HttpListener listener = new();
-        private readonly Task server;
+        private readonly WebApplication server;
         public string Base { get; }
         public string Source => Base + "v3/index.json";
         public ConcurrentQueue<string> Requests { get; } = new();
@@ -187,61 +214,54 @@ public sealed class ReleasePublicationTests
 
         public LocalFeed(Packages files, int primaryStatus = 201, int symbolStatus = 201, string sourceCase = "valid")
         {
-            var reservation = new TcpListener(IPAddress.Loopback, 0);
-            reservation.Start();
-            int port = ((IPEndPoint)reservation.LocalEndpoint).Port;
-            reservation.Stop();
-            Base = $"http://127.0.0.1:{port}/";
-            listener.Prefixes.Add(Base);
-            listener.Start();
-            server = Task.Run(async () =>
+            var builder = WebApplication.CreateSlimBuilder();
+            builder.Logging.ClearProviders();
+            // Bind once and keep the kernel-selected port for the server's lifetime.
+            builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
+            server = builder.Build();
+            server.Run(async context =>
             {
-                while (listener.IsListening)
+                string path = context.Request.Path.Value!;
+                Requests.Enqueue(context.Request.Method + " " + path);
+                context.Response.StatusCode = 404;
+                if (context.Request.Method == "GET" && path == "/v3/index.json")
                 {
-                    HttpListenerContext context;
-                    try { context = await listener.GetContextAsync(); }
-                    catch (Exception exception) when (exception is HttpListenerException or ObjectDisposedException) { break; }
-                    string path = context.Request.Url!.AbsolutePath;
-                    Requests.Enqueue(context.Request.HttpMethod + " " + path);
-                    context.Response.StatusCode = 404;
-                    if (context.Request.HttpMethod == "GET" && path == "/v3/index.json")
+                    var resources = new List<Dictionary<string, string>>();
+                    if (sourceCase != "no-primary")
                     {
-                        var resources = new List<Dictionary<string, string>>();
-                        if (sourceCase != "no-primary")
-                        {
-                            resources.Add(new() { ["@id"] = Base + "primary/", ["@type"] = "PackagePublish/2.0.0" });
-                        }
-                        if (sourceCase != "no-symbols")
-                        {
-                            resources.Add(new() { ["@id"] = sourceCase == "invalid-symbol-id" ? "invalid" : Base + "symbols/", ["@type"] = "SymbolPackagePublish/4.9.0" });
-                        }
-                        byte[] body = Encoding.UTF8.GetBytes(sourceCase == "invalid-json" ? "invalid" : JsonSerializer.Serialize(new { version = "3.0.0", resources }));
-                        context.Response.StatusCode = sourceCase == "index-rejection" ? 403 : 200;
-                        context.Response.ContentType = "application/json";
-                        context.Response.ContentLength64 = body.Length;
-                        await context.Response.OutputStream.WriteAsync(body);
+                        resources.Add(new() { ["@id"] = Base + "primary/", ["@type"] = "PackagePublish/2.0.0" });
                     }
-                    else if (context.Request.HttpMethod == "PUT")
+                    if (sourceCase != "no-symbols")
                     {
-                        Uploads.Enqueue(path);
-                        using var body = new MemoryStream();
-                        await context.Request.InputStream.CopyToAsync(body);
-                        byte[] expected = path == "/symbols/" ? files.SymbolBytes : files.PrimaryBytes;
-                        if (path is not ("/primary/" or "/symbols/") || body.ToArray().AsSpan().IndexOf(expected) < 0)
-                        {
-                            InvalidUploads.Enqueue(path);
-                        }
-                        context.Response.StatusCode = path == "/primary/" ? primaryStatus : symbolStatus;
+                        resources.Add(new() { ["@id"] = sourceCase == "invalid-symbol-id" ? "invalid" : Base + "symbols/", ["@type"] = "SymbolPackagePublish/4.9.0" });
                     }
-                    context.Response.Close();
+                    byte[] body = Encoding.UTF8.GetBytes(sourceCase == "invalid-json" ? "invalid" : JsonSerializer.Serialize(new { version = "3.0.0", resources }));
+                    context.Response.StatusCode = sourceCase == "index-rejection" ? 403 : 200;
+                    context.Response.ContentType = "application/json";
+                    context.Response.ContentLength = body.Length;
+                    await context.Response.Body.WriteAsync(body);
+                }
+                else if (context.Request.Method == "PUT")
+                {
+                    Uploads.Enqueue(path);
+                    using var body = new MemoryStream();
+                    await context.Request.Body.CopyToAsync(body);
+                    byte[] expected = path == "/symbols/" ? files.SymbolBytes : files.PrimaryBytes;
+                    if (path is not ("/primary/" or "/symbols/") || body.ToArray().AsSpan().IndexOf(expected) < 0)
+                    {
+                        InvalidUploads.Enqueue(path);
+                    }
+                    context.Response.StatusCode = path == "/primary/" ? primaryStatus : symbolStatus;
                 }
             });
+            server.StartAsync().GetAwaiter().GetResult();
+            Base = server.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single() + "/";
         }
 
         public void Dispose()
         {
-            listener.Close();
-            server.GetAwaiter().GetResult();
+            server.StopAsync().GetAwaiter().GetResult();
+            server.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
     }
 }

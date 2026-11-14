@@ -78,64 +78,50 @@ jobs:
           RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
         run: pwsh -NoProfile -File .\scripts\check-release-contract.ps1 -Mode Release -Version $env:RELEASE_VERSION -Tag '${{ github.ref_name }}'
 
-      - name: Restore
-        shell: pwsh
-        run: |
-          dotnet restore .\KeelMatrix.AuthSurface.sln --configfile .\NuGet.config --no-cache --force
-          if ($LASTEXITCODE -ne 0) { throw "Restore failed with exit code $LASTEXITCODE." }
-
-      - name: Build
+      - name: Prepare public locked package pair
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
         run: |
-          dotnet build .\KeelMatrix.AuthSurface.sln --configuration Release --no-restore -p:Version=$env:RELEASE_VERSION -p:PackageVersion=$env:RELEASE_VERSION
-          if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE." }
-
-      - name: Test
-        shell: pwsh
-        run: |
-          dotnet test .\KeelMatrix.AuthSurface.sln --configuration Release --no-build --no-restore --logger 'console;verbosity=minimal'
-          if ($LASTEXITCODE -ne 0) { throw "Test failed with exit code $LASTEXITCODE." }
-
-      - name: Pack
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
-        run: |
-          $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts/packages'
-          New-Item -ItemType Directory -Path $output -Force | Out-Null
-          Get-ChildItem -LiteralPath $output -File -ErrorAction SilentlyContinue | Remove-Item -Force
-          dotnet pack .\src\KeelMatrix.AuthSurface\KeelMatrix.AuthSurface.csproj --configuration Release --no-build --no-restore --include-symbols --p:SymbolPackageFormat=snupkg -p:Version=$env:RELEASE_VERSION -p:PackageVersion=$env:RELEASE_VERSION --output $output
-          if ($LASTEXITCODE -ne 0) { throw "Pack failed with exit code $LASTEXITCODE." }
-
-      - name: Validate exact package set and contents
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
-        run: |
-          $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts/packages'
-          $expected = @(
-            "KeelMatrix.AuthSurface.${env:RELEASE_VERSION}.nupkg",
-            "KeelMatrix.AuthSurface.${env:RELEASE_VERSION}.snupkg"
-          )
-          $actual = @(Get-ChildItem -LiteralPath $output -File | Select-Object -ExpandProperty Name | Sort-Object)
-          if (@(Compare-Object -ReferenceObject $expected -DifferenceObject $actual).Count -gt 0) {
-            throw "Unexpected package artifact set. Expected: $($expected -join ', '); actual: $($actual -join ', ')"
+          . ./build/Invoke-PublicPackageSession.ps1
+          $root = $env:GITHUB_WORKSPACE
+          $destination = Join-Path $root 'artifacts/packages'
+          Invoke-PublicPackageSession -Root $root -Solution (Join-Path $root 'KeelMatrix.AuthSurface.sln') -OutputDirectory $destination -ExpectedCommit '${{ github.sha }}' -Version $env:RELEASE_VERSION -Configuration Release -Action {
+              param($session)
+              $output = $session.Output
+              $buildProperties = $session.Properties
+              dotnet build .\KeelMatrix.AuthSurface.sln --configuration Release --no-restore --no-incremental @buildProperties
+              if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE." }
+              dotnet test .\KeelMatrix.AuthSurface.sln --configuration Release --no-build --no-restore @buildProperties --logger 'console;verbosity=minimal'
+              if ($LASTEXITCODE -ne 0) { throw "Test failed with exit code $LASTEXITCODE." }
+              dotnet pack .\src\KeelMatrix.AuthSurface\KeelMatrix.AuthSurface.csproj --configuration Release --no-build --no-restore @buildProperties --include-symbols --output $output
+              if ($LASTEXITCODE -ne 0) { throw "Pack failed with exit code $LASTEXITCODE." }
+              $expected = @(
+                "KeelMatrix.AuthSurface.${env:RELEASE_VERSION}.nupkg",
+                "KeelMatrix.AuthSurface.${env:RELEASE_VERSION}.snupkg"
+              )
+              $actual = @(Get-ChildItem -LiteralPath $output -File | Select-Object -ExpandProperty Name | Sort-Object)
+              if (@(Compare-Object -ReferenceObject $expected -DifferenceObject $actual).Count -gt 0) {
+                throw "Unexpected package artifact set. Expected: $($expected -join ', '); actual: $($actual -join ', ')"
+              }
+              & .\scripts\inspect-package.ps1 -PackagePath (Join-Path $output $expected[0]) -SymbolPackagePath (Join-Path $output $expected[1]) -ExpectedVersion $env:RELEASE_VERSION -RepositoryRoot $env:GITHUB_WORKSPACE -ExpectedCommit '${{ github.sha }}'
+              if ($LASTEXITCODE -ne 0) { throw "Package inspection failed with exit code $LASTEXITCODE." }
+              Set-PublicPackageInspection $session
           }
-          & .\scripts\inspect-package.ps1 -PackagePath (Join-Path $output $expected[0]) -SymbolPackagePath (Join-Path $output $expected[1]) -ExpectedVersion $env:RELEASE_VERSION -RepositoryRoot $env:GITHUB_WORKSPACE -ExpectedCommit '${{ github.sha }}'
-          if ($LASTEXITCODE -ne 0) { throw "Package inspection failed with exit code $LASTEXITCODE." }
-          $hashes = foreach ($name in $expected) {
-            $hash = (Get-FileHash -LiteralPath (Join-Path $output $name) -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $name"
+          if ($LASTEXITCODE -ne 0) { throw "Public preparation failed with exit code $LASTEXITCODE." }
+          $hashes = Get-ChildItem -LiteralPath $destination -File | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
           }
-          $hashes | Tee-Object -FilePath (Join-Path $output 'SHA256SUMS')
+          $hashes | Tee-Object -FilePath (Join-Path $root 'artifacts/build-evidence/SHA256SUMS')
 
       - name: Retain inspected release archives
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: release-${{ steps.release-version.outputs.version }}-${{ github.sha }}
-          path: artifacts/packages/
+          path: |
+            artifacts/packages/
+            artifacts/build-evidence/
           if-no-files-found: error
           retention-days: 90
 

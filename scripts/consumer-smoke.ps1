@@ -1,13 +1,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string] $PackagePath
+    [string] $PackagePath,
+    [string] $EvidenceDirectory = (Join-Path $PSScriptRoot '../artifacts/consumer-evidence')
 )
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('authsurface-consumer-' + [guid]::NewGuid().ToString('N'))
-$feed = Join-Path $root 'feed'
+$feed = Join-Path $root "candidate feed & 'quoted'"
 $project = Join-Path $root 'consumer'
 $packageVersion = ([xml](Get-Content -LiteralPath (Join-Path $repositoryRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version
 $packageId = 'KeelMatrix.AuthSurface'
@@ -18,12 +19,45 @@ if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
 
 $suppliedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
 $suppliedHash = (Get-FileHash -LiteralPath $suppliedPackage -Algorithm SHA512).Hash.ToLowerInvariant()
+. (Join-Path $repositoryRoot 'build/Get-PackageContentHash.ps1')
+. (Join-Path $repositoryRoot 'build/Read-CandidateInstall.ps1')
+$suppliedContentHash = Get-PackageContentHash $suppliedPackage
+$zip = [IO.Compression.ZipFile]::OpenRead($suppliedPackage)
+try {
+    $nuspecs = @($zip.Entries | Where-Object FullName -Like '*.nuspec')
+    if ($nuspecs.Count -ne 1) { throw 'Expected one package manifest.' }
+    $reader = [IO.StreamReader]::new($nuspecs[0].Open())
+    try { $metadata = ([xml]$reader.ReadToEnd()).package.metadata } finally { $reader.Dispose() }
+    $groups = @($metadata.dependencies.group)
+    if ($metadata.id -cne $packageId -or $metadata.version -cne $packageVersion -or $groups.Count -ne 1 -or
+        $groups[0].targetFramework -cne 'net8.0' -or @($groups[0].dependency).Count -ne 1 -or
+        $groups[0].dependency.id -cne 'KeelMatrix.Telemetry' -or $groups[0].dependency.version -cne '[0.1.1]') { throw 'Supplied package ID/version/framework/dependency contract mismatch.' }
+    $reader = [IO.StreamReader]::new($zip.GetEntry('README.md').Open())
+    try { $packedReadme = $reader.ReadToEnd() } finally { $reader.Dispose() }
+}
+finally { $zip.Dispose() }
+$instructions = @(
+    [pscustomobject]@{ Name = 'root'; Install = Read-CandidateInstall (Get-Content -LiteralPath (Join-Path $repositoryRoot 'README.md') -Raw) $packageVersion; Absolute = $false },
+    [pscustomobject]@{ Name = 'packed'; Install = Read-CandidateInstall $packedReadme $packageVersion; Absolute = $true }
+)
+$originalVariables = @{}
+foreach ($name in @('NUGET_PACKAGES','NUGET_HTTP_CACHE_PATH','NUGET_SCRATCH','NUGET_FALLBACK_PACKAGES','KEELMATRIX_NO_TELEMETRY','DOTNET_CLI_TELEMETRY_OPTOUT','DO_NOT_TRACK')) {
+    $originalVariables[$name] = [Environment]::GetEnvironmentVariable($name)
+}
+$originalLocation = Get-Location
+$receipts = [Collections.Generic.List[object]]::new()
 New-Item -ItemType Directory -Path $feed, $project -Force | Out-Null
 Copy-Item -LiteralPath $suppliedPackage -Destination (Join-Path $feed "$packageId.$packageVersion.nupkg")
 
 function Invoke-IsolatedDotnet([string] $Name, [string] $CachePath, [scriptblock] $Action) {
     $previousCache = $env:NUGET_PACKAGES
     $env:NUGET_PACKAGES = $CachePath
+    $env:NUGET_HTTP_CACHE_PATH = Join-Path $root 'http'
+    $env:NUGET_SCRATCH = Join-Path $root 'scratch'
+    $env:NUGET_FALLBACK_PACKAGES = $null
+    $env:KEELMATRIX_NO_TELEMETRY = '1'
+    $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
+    $env:DO_NOT_TRACK = '1'
     try {
         Write-Output "=== $Name (NUGET_PACKAGES=$CachePath) ==="
         & $Action
@@ -51,9 +85,9 @@ function Assert-SuppliedPackageConsumed([string] $CachePath, [string] $ProjectPa
         throw "The isolated package cache does not contain the expected $packageId $packageVersion artifact."
     }
 
-    $cacheHash = [Convert]::ToHexString(
-        [Convert]::FromBase64String((Get-Content -LiteralPath $cachedHashFile -Raw).Trim())).ToLowerInvariant()
-    if ($cacheHash -ne $ExpectedHash) {
+    $cacheHash = (Get-FileHash -LiteralPath $cachedPackage -Algorithm SHA512).Hash.ToLowerInvariant()
+    if ($cacheHash -cne $ExpectedHash -or (Get-PackageContentHash $cachedPackage) -cne $suppliedContentHash -or
+        (Get-Content -LiteralPath $cachedHashFile -Raw).Trim() -cne $suppliedContentHash) {
         throw "The consumer restored a different $packageId $packageVersion artifact. supplied=$ExpectedHash consumed=$cacheHash"
     }
 
@@ -63,36 +97,18 @@ function Assert-SuppliedPackageConsumed([string] $CachePath, [string] $ProjectPa
     }
     $assets = Get-Content -LiteralPath $assetsPath -Raw | ConvertFrom-Json
     $library = @($assets.libraries.PSObject.Properties | Where-Object { $_.Name -eq "$packageId/$packageVersion" }) | Select-Object -First 1
-    $suppliedHashBase64 = [Convert]::ToBase64String([Convert]::FromHexString($ExpectedHash))
+    $suppliedHashBase64 = $suppliedContentHash
     if ($null -eq $library -or [string]$library.Value.sha512 -ne $suppliedHashBase64) {
         $reportedHash = if ($null -eq $library) { '<missing>' } else { [string]$library.Value.sha512 }
         throw "project.assets.json did not select the supplied $packageId $packageVersion artifact. reported=$reportedHash"
     }
 
+    $receipts.Add([pscustomobject]@{ Cache = $CachePath; RawSHA512 = $cacheHash; NuGetContentHash = $suppliedContentHash; AssetsSHA256 = (Get-FileHash -LiteralPath $assetsPath -Algorithm SHA256).Hash })
     Write-Output "Verified supplied package artifact: $packageId $packageVersion SHA512=$ExpectedHash"
 }
 
 try {
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'global.json') -Destination (Join-Path $root 'global.json')
-
-    @'
-<?xml version="1.0" encoding="utf-8"?>
-<configuration>
-  <packageSources>
-    <clear />
-    <add key="local" value="./feed" />
-    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
-  </packageSources>
-  <packageSourceMapping>
-    <packageSource key="local">
-      <package pattern="KeelMatrix.AuthSurface" />
-    </packageSource>
-    <packageSource key="nuget.org">
-      <package pattern="*" />
-    </packageSource>
-  </packageSourceMapping>
-</configuration>
-'@ | Set-Content -LiteralPath (Join-Path $root 'NuGet.config') -Encoding utf8
 
     @'
 <Project Sdk="Microsoft.NET.Sdk.Web">
@@ -244,30 +260,47 @@ sealed class DerivedRolesRequirement : RolesAuthorizationRequirement
 }
 '@ | Set-Content -LiteralPath (Join-Path $project 'Program.cs') -Encoding utf8
 
-    $configPath = Join-Path $root 'NuGet.config'
-    $feedPath = (Resolve-Path -LiteralPath $feed).Path
-    $installCache = Join-Path $root 'packages-install'
-    $restoreCache = Join-Path $root 'packages-restore'
-    $runCache = Join-Path $root 'packages-run'
-    New-Item -ItemType Directory -Path $installCache, $restoreCache, $runCache -Force | Out-Null
-
-    Invoke-IsolatedDotnet 'PackageReference install' $installCache {
-        dotnet add (Join-Path $project 'Consumer.csproj') package $packageId --version $packageVersion --source $feedPath --no-restore
+    $program = Get-Content -LiteralPath (Join-Path $project 'Program.cs') -Raw
+    foreach ($instruction in $instructions) {
+        $project = Join-Path $root $instruction.Name
+        New-Item -ItemType Directory -Path $project -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $root 'consumer/Consumer.csproj') -Destination $project
+        Set-Content -LiteralPath (Join-Path $project 'Program.cs') -Value $program -Encoding utf8
+        $config = $instruction.Install.Config
+        $source = @($config.configuration.packageSources.add | Where-Object key -CEQ 'authsurface-candidate')
+        if ($source.Count -ne 1) { throw 'Candidate feed is missing or ambiguous.' }
+        $source[0].SetAttribute('value', $(if ($instruction.Absolute) { $feed } else { [IO.Path]::GetRelativePath($project, $feed).Replace('\','/') }))
+        $config.Save((Join-Path $project 'NuGet.config'))
+        Push-Location $project
+        try {
+            $installCache = Join-Path $root ($instruction.Name + '-cold')
+            foreach ($command in $instruction.Install.Commands) {
+                Invoke-IsolatedDotnet "$($instruction.Name): literal $command" $installCache { & ([scriptblock]::Create($command)) }
+            }
+            Assert-SuppliedPackageConsumed $installCache $project $suppliedHash
+            $restore = $instruction.Install.Commands[1]
+            Invoke-IsolatedDotnet "$($instruction.Name): verified warm restore" $installCache { & ([scriptblock]::Create($restore)) }
+            Assert-SuppliedPackageConsumed $installCache $project $suppliedHash
+            $runCache = Join-Path $root ($instruction.Name + '-run')
+            Invoke-IsolatedDotnet "$($instruction.Name): fresh runtime restore" $runCache { & ([scriptblock]::Create($restore)) }
+            Assert-SuppliedPackageConsumed $runCache $project $suppliedHash
+            Invoke-IsolatedDotnet "$($instruction.Name): consumer run" $runCache { dotnet run --project ./Consumer.csproj -c Release --no-restore }
+        }
+        finally { Pop-Location }
     }
-
-    Invoke-IsolatedDotnet 'consumer restore' $restoreCache {
-        dotnet restore (Join-Path $project 'Consumer.csproj') --configfile $configPath --force-evaluate --no-cache
-    }
-    Assert-SuppliedPackageConsumed $restoreCache $project $suppliedHash
-
-    Invoke-IsolatedDotnet 'consumer run restore' $runCache {
-        dotnet restore (Join-Path $project 'Consumer.csproj') --configfile $configPath --force-evaluate --no-cache
-    }
-    Assert-SuppliedPackageConsumed $runCache $project $suppliedHash
-    Invoke-IsolatedDotnet 'consumer run' $runCache {
-        dotnet run --project (Join-Path $project 'Consumer.csproj') -c Release --no-restore
-    }
+    New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
+    [ordered]@{ SuppliedSHA512 = $suppliedHash; ContentHash = $suppliedContentHash; Readmes = @('root','packed'); Consumed = $receipts.ToArray() } |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $EvidenceDirectory ($suppliedHash + '.json')) -Encoding utf8
 }
 finally {
+    foreach ($name in $originalVariables.Keys) {
+        if ($null -eq $originalVariables[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($name, $originalVariables[$name]) }
+    }
+    Set-Location -LiteralPath $originalLocation.Path
+    $resolved = [IO.Path]::GetFullPath($root)
+    $prefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('/','\') + [IO.Path]::DirectorySeparatorChar
+    if (-not $resolved.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or (Split-Path $resolved -Leaf) -notlike 'authsurface-consumer-*') { throw 'Consumer cleanup escaped scratch.' }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
+$global:LASTEXITCODE = 0

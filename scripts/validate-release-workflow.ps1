@@ -172,7 +172,10 @@ if ($releaseWorkflow -match '(?i)secrets\.[^\s}]*NUGET|NUGET_API_KEY\s*:\s*\$\{\
 
 foreach ($requiredText in @(
     'check-release-contract.ps1 -Mode Release',
-    '--configfile .\NuGet.config --no-cache --force',
+    '. ./build/Invoke-PublicPackageSession.ps1',
+    'Invoke-PublicPackageSession -Root $root -Solution',
+    '--no-restore --no-incremental @buildProperties',
+    'Set-PublicPackageInspection $session',
     'dotnet build .\KeelMatrix.AuthSurface.sln --configuration Release --no-restore',
     'dotnet test .\KeelMatrix.AuthSurface.sln --configuration Release --no-build --no-restore',
     'dotnet pack .\src\KeelMatrix.AuthSurface\KeelMatrix.AuthSurface.csproj',
@@ -194,25 +197,32 @@ $packIndex = $releaseWorkflow.IndexOf('dotnet pack')
 if ($buildIndex -lt 0 -or $testIndex -lt $buildIndex -or $packIndex -lt $testIndex) {
     throw 'Release workflow must build and test before packing.'
 }
+foreach ($boundary in @('Build','Test','Pack','Public preparation')) {
+    if ($releaseWorkflow -notmatch ('(?m)^ +if \(\$LASTEXITCODE -ne 0\) \{ throw "' + [regex]::Escape($boundary) + ' failed with exit code \$LASTEXITCODE\." \}')) {
+        throw "Release must propagate $boundary failures."
+    }
+}
 
 $releaseSteps = @([regex]::Split($releaseWorkflow, '(?m)(?=^      - )'))
 $inspectionSteps = @($releaseSteps | Where-Object { $_ -match 'inspect-package\.ps1' })
 if ($inspectionSteps.Count -ne 1 -or
-    $inspectionSteps[0] -notmatch '(?m)^          & \.\\scripts\\inspect-package\.ps1 -PackagePath \(Join-Path \$output \$expected\[0\]\) -SymbolPackagePath \(Join-Path \$output \$expected\[1\]\) -ExpectedVersion \$env:RELEASE_VERSION -RepositoryRoot \$env:GITHUB_WORKSPACE -ExpectedCommit ''\$\{\{ github\.sha \}\}''\s*\r?\n          if \(\$LASTEXITCODE -ne 0\)' -or
+    @([regex]::Matches($inspectionSteps[0], 'inspect-package\.ps1')).Count -ne 1 -or
+    $inspectionSteps[0] -notmatch 'Invoke-PublicPackageSession .* -Action \{' -or
+    $inspectionSteps[0] -notmatch '(?m)^ +& \.\\scripts\\inspect-package\.ps1 -PackagePath \(Join-Path \$output \$expected\[0\]\) -SymbolPackagePath \(Join-Path \$output \$expected\[1\]\) -ExpectedVersion \$env:RELEASE_VERSION -RepositoryRoot \$env:GITHUB_WORKSPACE -ExpectedCommit ''\$\{\{ github\.sha \}\}''\s*\r?\n +if \(\$LASTEXITCODE -ne 0\)' -or
     $inspectionSteps[0] -match '(?m)^        (?:continue-on-error|if):' -or
     $releaseWorkflow.IndexOf('inspect-package.ps1') -lt $packIndex) {
     throw 'Release must inspect the exact packaged pair at the checkout commit after pack, with fatal failure propagation.'
 }
 $publicationSteps = @($releaseSteps | Where-Object { $_ -match 'push-release-package\.ps1' })
 if ($publicationSteps.Count -ne 1 -or
-    $publicationSteps[0] -notmatch '(?m)^          & \.\\scripts\\push-release-package\.ps1 -PackagePath \(Join-Path \$output "KeelMatrix\.AuthSurface\.\$\{env:RELEASE_VERSION\}\.nupkg"\)\s*\r?\n          if \(\$LASTEXITCODE -ne 0\)' -or
+    $publicationSteps[0] -notmatch '(?m)^ +& \.\\scripts\\push-release-package\.ps1 -PackagePath \(Join-Path \$output "KeelMatrix\.AuthSurface\.\$\{env:RELEASE_VERSION\}\.nupkg"\)\s*\r?\n +if \(\$LASTEXITCODE -ne 0\)' -or
     $publicationSteps[0] -match '(?m)^        (?:continue-on-error|if):' -or
     $releaseWorkflow -match 'dotnet nuget push|--symbol-source|--skip-duplicate') {
     throw 'Release must call the tested publication script once, propagate failures, and use v3 symbol discovery.'
 }
 $retentionSteps = @($releaseSteps | Where-Object { $_ -match 'uses: actions/upload-artifact@' })
 if ($retentionSteps.Count -ne 1 -or
-    $retentionSteps[0] -notmatch '(?m)^          path: artifacts/packages/\s*$' -or
+    $retentionSteps[0] -notmatch '(?m)^          path: \|\s*\r?\n            artifacts/packages/\s*\r?\n            artifacts/build-evidence/\s*$' -or
     $retentionSteps[0] -notmatch '(?m)^          if-no-files-found: error\s*$' -or
     $retentionSteps[0] -notmatch '(?m)^          retention-days: 90\s*$' -or
     $retentionSteps[0] -match '(?m)^        (?:continue-on-error|if):' -or

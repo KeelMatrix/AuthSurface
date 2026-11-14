@@ -5,9 +5,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$env:KEELMATRIX_NO_TELEMETRY = '1'
-$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
-$env:DO_NOT_TRACK = '1'
 
 $root = Split-Path -Parent $PSScriptRoot
 $solution = Join-Path $root 'KeelMatrix.AuthSurface.sln'
@@ -43,15 +40,21 @@ try {
     Invoke-Gate 'website package metadata regression tests' { & (Join-Path $PSScriptRoot 'test-website-metadata.ps1') }
     $expectedCommit = (& git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot determine expected source commit.' }
-    Invoke-Gate 'controlled restore' { dotnet restore $solution --configfile (Join-Path $root 'NuGet.config') --force-evaluate }
+    . (Join-Path $root 'build/Invoke-PublicPackageSession.ps1')
+    Invoke-PublicPackageSession -Root $root -Solution $solution -OutputDirectory $packageDirectory -ExpectedCommit $expectedCommit -Version $version -Configuration $Configuration -Action {
+    param($session)
+    $root = $session.RepositoryRoot
+    $solution = $session.Solution
+    $library = Join-Path $root 'src/KeelMatrix.AuthSurface/KeelMatrix.AuthSurface.csproj'
+    $packageDirectory = $session.Output
+    $buildProperties = $session.Properties
     Invoke-Gate 'format whitespace' { dotnet format whitespace $solution --verify-no-changes --no-restore }
     Invoke-Gate 'format analyzers' { dotnet format analyzers $library --diagnostics RS0016,RS0017,RS0025,RS0037 --verify-no-changes --no-restore }
-    Invoke-Gate 'Release build' { dotnet build $solution -c $Configuration --no-restore }
-    Invoke-Gate 'unit and integration tests' { dotnet test $solution -c $Configuration --no-build --no-restore --logger 'console;verbosity=minimal' }
+    Invoke-Gate 'Release build' { dotnet build $solution -c $Configuration --no-restore --no-incremental @buildProperties }
+    Invoke-Gate 'unit and integration tests' { dotnet test $solution -c $Configuration --no-build --no-restore @buildProperties --logger 'console;verbosity=minimal' }
 
     New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
-    Get-ChildItem -LiteralPath $packageDirectory -File -ErrorAction SilentlyContinue | Remove-Item -Force
-    Invoke-Gate 'package build' { dotnet pack $library -c $Configuration --no-build --no-restore -o $packageDirectory }
+    Invoke-Gate 'package build' { dotnet pack $library -c $Configuration --no-build --no-restore @buildProperties -o $packageDirectory }
     $expectedArtifacts = @(
         "KeelMatrix.AuthSurface.$version.nupkg",
         "KeelMatrix.AuthSurface.$version.snupkg"
@@ -65,6 +68,7 @@ try {
     Invoke-Gate 'package inspection' {
         & (Join-Path $PSScriptRoot 'inspect-package.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName -ExpectedVersion $version -RepositoryRoot $root -ExpectedCommit $expectedCommit -VerifierPath (Join-Path $root "build/SourceProvenance/bin/$Configuration/net8.0/SourceProvenance.dll")
     }
+    Set-PublicPackageInspection $session
     Invoke-Gate 'source provenance caller regression tests' {
         & (Join-Path $PSScriptRoot 'test-source-provenance.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName -ExpectedCommit $expectedCommit -Configuration $Configuration
     }
@@ -91,11 +95,13 @@ try {
     }
     Invoke-Gate 'clean package consumer smoke' { & (Join-Path $PSScriptRoot 'consumer-smoke.ps1') -PackagePath $nupkg.FullName }
     Invoke-Gate 'stale-cache package consumer regression' { & (Join-Path $PSScriptRoot 'test-consumer-smoke.ps1') -PackagePath $nupkg.FullName }
+    Invoke-Gate 'public compiler-input regression tests' { & (Join-Path $PSScriptRoot 'test-build-inputs.ps1') }
     Invoke-Gate 'vulnerability gate negative test' { & (Join-Path $PSScriptRoot 'test-vulnerability-gate.ps1') }
 
     Invoke-Gate 'repository hygiene and authorship negative controls' { & (Join-Path $PSScriptRoot 'test-repository-hygiene.ps1') }
     Invoke-Gate 'release-candidate repository hygiene and authorship' { & (Join-Path $PSScriptRoot 'check-repository-hygiene.ps1') }
     Write-Host 'telemetry suppression/privacy checks: passed (suppression variables set; tracked paths/content, complete candidate commit messages, and candidate-history author metadata satisfy the public contract)'
+    }
 }
 finally {
     Pop-Location

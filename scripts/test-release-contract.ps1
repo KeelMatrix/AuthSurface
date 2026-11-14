@@ -30,6 +30,25 @@ Initial pre-release implementation.
 
     & $contract -Root $root -Mode Candidate -Version '0.1.0'
 
+    foreach ($token in @('0.1.0', '[0.1.0]', "'[0.1.0]'", '"[0.1.0]"')) {
+        foreach ($path in @('README.md','src/KeelMatrix.AuthSurface/README.md')) {
+            Set-Content -LiteralPath (Join-Path $root $path) -Value "dotnet add package KeelMatrix.AuthSurface --version $token --no-restore"
+        }
+        & $contract -Root $root -Mode Candidate -Version '0.1.0'
+    }
+    foreach ($token in @('0.1.00','0.1.01','0.1.0-preview.1',"'[0.1.1]'", "'[0.1.0,)'", '0.1.*')) {
+        foreach ($path in @('README.md','src/KeelMatrix.AuthSurface/README.md')) {
+            Set-Content -LiteralPath (Join-Path $root 'README.md') -Value $install
+            Set-Content -LiteralPath (Join-Path $root 'src/KeelMatrix.AuthSurface/README.md') -Value $install
+            Set-Content -LiteralPath (Join-Path $root $path) -Value "dotnet add package KeelMatrix.AuthSurface --version $token --no-restore"
+            $rejected = $false
+            try { & $contract -Root $root -Mode Candidate -Version '0.1.0' }
+            catch { $rejected = $_ -like '*install example does not use release version*' }
+            if (-not $rejected) { throw "Release version alignment accepted $token in $path." }
+        }
+    }
+    foreach ($path in @('README.md','src/KeelMatrix.AuthSurface/README.md')) { Set-Content -LiteralPath (Join-Path $root $path) -Value $install }
+
     $plannedReleaseRejected = $false
     try { & $contract -Root $root -Mode Release -Version '0.1.0' -Tag 'v0.1.0' }
     catch { $plannedReleaseRejected = $true }

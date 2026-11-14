@@ -1,0 +1,5 @@
+<Project>
+  <Target Name="RecordPublicCompilerInputs" BeforeTargets="CoreCompile" Condition="'$(PublicPackageSessionReferences)' != ''">
+    <WriteLinesToFile File="$(PublicPackageSessionReferences)/$(MSBuildProjectName).txt" Lines="@(ReferencePathWithRefAssemblies->'%(FullPath)')" Overwrite="true" />
+  </Target>
+</Project>

@@ -12,11 +12,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$env:KEELMATRIX_NO_TELEMETRY = '1'
-$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
-$env:DO_NOT_TRACK = '1'
 
 $root = (Resolve-Path -LiteralPath $Root).Path
+. (Join-Path $root 'build/Invoke-PublicPackageSession.ps1')
 if (-not $Version) {
     $Version = ([xml](Get-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version
 }
@@ -41,20 +39,23 @@ try {
     Invoke-Native 'release contract' {
         & '.\scripts\check-release-contract.ps1' -Mode $ContractMode -Version $Version
     }
-    Invoke-Native 'release-equivalent restore' {
-        dotnet restore $solution --configfile '.\NuGet.config' --no-cache --force
-    }
+    Invoke-PublicPackageSession -Root $root -Solution (Join-Path $root $solution) -OutputDirectory $output -ExpectedCommit $expectedCommit -Version $Version -Configuration $Configuration -Action {
+    param($session)
+    $root = $session.RepositoryRoot
+    $solution = $session.Solution
+    $library = Join-Path $root 'src/KeelMatrix.AuthSurface/KeelMatrix.AuthSurface.csproj'
+    $output = $session.Output
+    $buildProperties = $session.Properties
     Invoke-Native 'release-equivalent build' {
-        dotnet build $solution --configuration $Configuration --no-restore -p:Version=$Version -p:PackageVersion=$Version
+        dotnet build $solution --configuration $Configuration --no-restore --no-incremental @buildProperties
     }
     Invoke-Native 'release-equivalent test' {
-        dotnet test $solution --configuration $Configuration --no-build --no-restore --logger 'console;verbosity=minimal'
+        dotnet test $solution --configuration $Configuration --no-build --no-restore @buildProperties --logger 'console;verbosity=minimal'
     }
 
     New-Item -ItemType Directory -Path $output -Force | Out-Null
-    Get-ChildItem -LiteralPath $output -File -ErrorAction SilentlyContinue | Remove-Item -Force
     Invoke-Native 'release-equivalent pack' {
-        dotnet pack $library --configuration $Configuration --no-build --no-restore --include-symbols --p:SymbolPackageFormat=snupkg -p:Version=$Version -p:PackageVersion=$Version --output $output
+        dotnet pack $library --configuration $Configuration --no-build --no-restore @buildProperties --include-symbols --output $output
     }
 
     $nupkg = Join-Path $output "KeelMatrix.AuthSurface.$Version.nupkg"
@@ -71,7 +72,9 @@ try {
     Invoke-Native 'release-equivalent package inspection' {
         & '.\scripts\inspect-package.ps1' -PackagePath $nupkg -SymbolPackagePath $snupkg -ExpectedVersion $Version -RepositoryRoot $root -ExpectedCommit $expectedCommit -VerifierPath (Join-Path $root "build/SourceProvenance/bin/$Configuration/net8.0/SourceProvenance.dll")
     }
-    Write-Output "Release rehearsal passed without authentication or publication. Artifacts: $nupkg, $snupkg"
+    Set-PublicPackageInspection $session
+    }
+    Write-Output "Release rehearsal passed without authentication or publication. Artifacts: $(Join-Path $output "KeelMatrix.AuthSurface.$Version.nupkg"), $(Join-Path $output "KeelMatrix.AuthSurface.$Version.snupkg")"
 }
 finally {
     Pop-Location
