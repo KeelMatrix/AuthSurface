@@ -35,6 +35,14 @@ public sealed class SourceProvenanceTests
     }
 
     [Fact]
+    public void DeterministicPrefixComesFromTheActualMap()
+    {
+        Pair pair = Create([new("/alternate/root/src/Library/File.cs", Source)], Map("/alternate/root/*", UrlRoot + "*"));
+        Report report = Check(pair, path => { Assert.Equal("src/Library/File.cs", path); return Source; });
+        Assert.True(report.Success);
+    }
+
+    [Fact]
     public void OriginalProjectRootFailsAtTheSameCorrectCommitDespiteSameBasename()
     {
         Pair pair = Create([new("/_/File.cs", Source)], Map("/_/*", UrlRoot + "*"));
@@ -242,6 +250,11 @@ public sealed class SourceProvenanceTests
     {
         using Fixture fixture = new();
         string root = fixture.Root;
+        await Run(root, "git", "init", "-q");
+        // The temporary directory can have a filesystem alias (for example on macOS).
+        // Use Git's repository identity for the absolute Compile input as well.
+        root = Path.GetFullPath((await Run(root, "git", "rev-parse", "--show-toplevel")).Trim());
+        Assert.True(Directory.Exists(Path.Combine(root, ".git")), $"Git root is not the initialized fixture: {root}");
         string project = Path.Combine(root, "src", "Library");
         Directory.CreateDirectory(project);
         Directory.CreateDirectory(Path.Combine(project, "nested space ü"));
@@ -268,7 +281,6 @@ public sealed class SourceProvenanceTests
         DirectoryInfo? repo = new(AppContext.BaseDirectory);
         while (repo is not null && !File.Exists(Path.Combine(repo.FullName, "global.json"))) { repo = repo.Parent; }
         File.WriteAllBytes(Path.Combine(root, "global.json"), File.ReadAllBytes(Path.Combine(repo!.FullName, "global.json")));
-        await Run(root, "git", "init", "-q");
         await Run(root, "git", "config", "core.autocrlf", "false");
         await Run(root, "git", "remote", "add", "origin", "https://github.com/KeelMatrix/AuthSurface.git");
         await Run(root, "git", "add", ".");
@@ -282,7 +294,9 @@ public sealed class SourceProvenanceTests
         Assert.True(report.Success, JsonSerializer.Serialize(report));
         foreach (string path in new[] { "Root.cs", "src/Library/Project.cs", "shared/Linked.cs" })
         {
-            DocumentResult authored = Assert.Single(report.Documents.Where(row => row.Name == "/_/" + path));
+            DocumentResult[] matches = report.Documents.Where(row => row.Url is not null && Verifier.RepositoryPath(row.Url, commit) == path).ToArray();
+            Assert.True(matches.Length == 1, $"Expected mapped repository path {path}: {JsonSerializer.Serialize(report)}");
+            DocumentResult authored = Assert.Single(matches);
             Assert.True(authored.Success);
             Assert.StartsWith("git-blob", authored.Channel, StringComparison.Ordinal);
         }
@@ -290,7 +304,9 @@ public sealed class SourceProvenanceTests
         // integration on a filesystem with a different Unicode normalization form.
         // Either exact source channel is valid; normalization here only identifies
         // the fixture row, never changes the verifier's Git path or source bytes.
-        DocumentResult nested = Assert.Single(report.Documents.Where(row => row.Name.Normalize(NormalizationForm.FormC) == "/_/src/Library/nested space ü/Nested.cs"));
+        DocumentResult[] nestedRows = report.Documents.Where(row => row.Url is not null && Verifier.RepositoryPath(row.Url, commit).Normalize(NormalizationForm.FormC) == "src/Library/nested space ü/Nested.cs").ToArray();
+        Assert.True(nestedRows.Length == 1, $"Expected mapped nested Unicode path: {JsonSerializer.Serialize(report)}");
+        DocumentResult nested = Assert.Single(nestedRows);
         Assert.True(nested.Success);
         Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(project, "nested space ü", "Nested.cs")))).ToLowerInvariant(), nested.Checksum);
         Assert.True(nested.Channel == "embedded" || nested.Channel.StartsWith("git-blob", StringComparison.Ordinal));
@@ -398,7 +414,7 @@ public sealed class SourceProvenanceTests
 
     private static async Task<string> Run(string directory, string executable, params string[] arguments)
     {
-        ProcessStartInfo start = new(executable) { WorkingDirectory = directory, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        ProcessStartInfo start = new(executable) { WorkingDirectory = directory, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
         foreach (string argument in arguments) { start.ArgumentList.Add(argument); }
         using Process process = Process.Start(start)!;
         Task<string> stdout = process.StandardOutput.ReadToEndAsync();
