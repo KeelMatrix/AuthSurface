@@ -33,6 +33,8 @@ function Invoke-Native([string] $Name, [scriptblock] $Action) {
 
 Push-Location $root
 try {
+    $expectedCommit = (& git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot determine expected source commit.' }
     Invoke-Native 'release contract' {
         & '.\scripts\check-release-contract.ps1' -Mode $ContractMode -Version $Version
     }
@@ -64,7 +66,7 @@ try {
     }
 
     Invoke-Native 'release-equivalent package inspection' {
-        & '.\scripts\inspect-package.ps1' -PackagePath $nupkg -SymbolPackagePath $snupkg -ExpectedVersion $Version
+        & '.\scripts\inspect-package.ps1' -PackagePath $nupkg -SymbolPackagePath $snupkg -ExpectedVersion $Version -RepositoryRoot $root -ExpectedCommit $expectedCommit -VerifierPath (Join-Path $root "build/SourceProvenance/bin/$Configuration/net8.0/SourceProvenance.dll")
     }
     Write-Output "Release rehearsal passed without authentication or publication. Artifacts: $nupkg, $snupkg"
 }

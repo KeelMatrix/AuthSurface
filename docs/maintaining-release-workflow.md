@@ -1,5 +1,80 @@
 # Maintaining the release workflow
 
+This document owns the packaged source-provenance contract and explains release
+inspection, publication, historical symbol recovery, and workflow maintenance.
+
+## Packaged source provenance
+
+Every document in the packaged portable PDB must supply exact source bytes at
+the package's pinned repository commit, or checksum-valid embedded source.
+The DLL in the `.nupkg` and PDB in the `.snupkg` must match in portable ID,
+stamp, age, and the DLL-declared checksum of the PDB with its ID zeroed.
+Finding a commit string, a PDB entry, or one working source file is insufficient.
+
+`build/SourceProvenance` is a non-packable .NET 8 build utility using framework
+PE and metadata readers. It inspects the exact archive entries, accounts for
+every document row, and checks SHA-256 source bytes without text decoding or
+newline conversion. For rows without embedded source it applies the actual
+SourceLink map, requires this repository and the expected immutable commit in
+the resulting URL, derives the Git path from that URL, and reads the raw blob.
+It does not prepend a project directory, search for basenames, or skip generated
+documents. SourceLink uses case-insensitive document matching and the most
+specific mapping; the resulting Git path remains case-sensitive. Wildcard
+substitutions preserve path segments and URL-escape spaces and other characters.
+Malformed/ambiguous maps, absent blobs, unsupported checksums, byte mismatches,
+or one unresolved row fail the gate. Raw and deflate embedded-source records
+must have the document as their parent, the declared length, and the exact hash.
+An embedded row claims that source channel only; it does not prove its URL works.
+
+The shipping project enables `EmbedUntrackedSources` for SDK-generated files.
+Compiler mapping and SourceLink share the SDK's repository source roots; do not
+override `PathMap` with the project root. Nested and linked sources inside the
+repository must preserve their physical repository-relative suffixes.
+
+From the repository root, after building and packing:
+
+```powershell
+$commit = (git rev-parse HEAD).Trim()
+pwsh -NoProfile -File ./scripts/inspect-package.ps1 `
+  -PackagePath ./artifacts/package/KeelMatrix.AuthSurface.0.1.0.nupkg `
+  -SymbolPackagePath ./artifacts/package/KeelMatrix.AuthSurface.0.1.0.snupkg `
+  -RepositoryRoot . -ExpectedCommit $commit
+```
+
+The default verifier path is its Release build. Pass `-VerifierPath` for another
+configuration. Both symbol archive and expected commit are required. Complete
+validation, release rehearsal, and tag-build preparation pass the checkout
+identity explicitly. A native failure or script exception stops subsequent
+success, archive hashes/retention, authentication, and publication prerequisites.
+`SourceProvenanceTests` covers mappings, exact bytes, pair integrity, embedding,
+and real compiled source layouts. `scripts/test-source-provenance.ps1` executes
+the real callers and release preparation block with controlled failures.
+
+Local Git-blob validation proves immutable path and byte identity, **not provider
+HTTP availability**. After a candidate is pushed, public availability verification
+must fetch each non-embedded row's actual emitted URL and compare its raw-byte
+checksum. Report a failed or unavailable URL as incomplete availability evidence.
+No HTTP fetch is performed by the deterministic local gate.
+
+### Published 0.1.0 debugging limitation
+
+The public 0.1.0 DLL and symbols match, but all 19 authored source maps omit
+`src/KeelMatrix.AuthSurface/`. Its three generated documents have neither
+retrievable nor embedded source. Automatic source retrieval is broken. To debug
+that version, check out `v0.1.0` and configure the debugger to use the local
+`src/KeelMatrix.AuthSurface` directory, or use decompiled source. This does not
+provide the original generated files.
+
+The corrected source build and provenance gate are **unpublished**. The local
+artifact name still uses the current development version; it is not a replacement
+for the public 0.1.0 bytes. A correction requires a newly built matching DLL/PDB
+pair and a separate publication/version decision. Preserve the original tag and
+saved recovery archive. Re-uploading that archive cannot repair its source map.
+
+Format references: [SourceLink mapping](https://github.com/dotnet/designs/blob/main/accepted/2020/diagnostics/source-link.md),
+[portable PDB records](https://github.com/dotnet/runtime/blob/main/docs/design/specs/PortablePdb-Metadata.md),
+and [PE/PDB checksums](https://github.com/dotnet/runtime/blob/main/docs/design/specs/PE-COFF.md).
+
 ## Publish packages and symbols
 
 `.github/workflows/release.yml` owns the release steps. The publication command
@@ -51,7 +126,9 @@ artifact and provider identity contract is
 the durable recovery input: **25310 bytes**, SHA256
 `8bd933ea649f9930bacb29afb98143b83e81cef5b501b36dff67fa7c4a51ea1b`.
 Its PDB has been checked against the actual public DLL's portable identity,
-deterministic checksum and original SourceLink. Original whole-archive equality
+deterministic checksum and original SourceLink commit pin. That pin check did
+not establish working source paths; see the [0.1.0 debugging limitation](#published-010-debugging-limitation).
+Original whole-archive equality
 is **unknown**. Do not replace this archive with a new build.
 
 The separate `recover-symbols` job in `release.yml` accepts `workflow_dispatch`

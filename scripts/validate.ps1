@@ -41,6 +41,8 @@ try {
     }
 
     Invoke-Gate 'website package metadata regression tests' { & (Join-Path $PSScriptRoot 'test-website-metadata.ps1') }
+    $expectedCommit = (& git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot determine expected source commit.' }
     Invoke-Gate 'controlled restore' { dotnet restore $solution --configfile (Join-Path $root 'NuGet.config') --force-evaluate }
     Invoke-Gate 'format whitespace' { dotnet format whitespace $solution --verify-no-changes --no-restore }
     Invoke-Gate 'format analyzers' { dotnet format analyzers $library --diagnostics RS0016,RS0017,RS0025,RS0037 --verify-no-changes --no-restore }
@@ -61,7 +63,10 @@ try {
     $nupkg = Get-Item -LiteralPath (Join-Path $packageDirectory $expectedArtifacts[0])
     $snupkg = Get-Item -LiteralPath (Join-Path $packageDirectory $expectedArtifacts[1])
     Invoke-Gate 'package inspection' {
-        & (Join-Path $PSScriptRoot 'inspect-package.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName -ExpectedVersion $version
+        & (Join-Path $PSScriptRoot 'inspect-package.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName -ExpectedVersion $version -RepositoryRoot $root -ExpectedCommit $expectedCommit -VerifierPath (Join-Path $root "build/SourceProvenance/bin/$Configuration/net8.0/SourceProvenance.dll")
+    }
+    Invoke-Gate 'source provenance caller regression tests' {
+        & (Join-Path $PSScriptRoot 'test-source-provenance.ps1') -PackagePath $nupkg.FullName -SymbolPackagePath $snupkg.FullName -ExpectedCommit $expectedCommit -Configuration $Configuration
     }
     $vulnerabilityReportPath = Join-Path ([System.IO.Path]::GetTempPath()) ('authsurface-vulnerabilities-' + [guid]::NewGuid().ToString('N') + '.json')
     try {

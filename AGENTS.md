@@ -6,6 +6,7 @@
 - Integration fixtures: `fixtures`.
 - Tests: `tests`.
 - Validation scripts: `scripts`.
+- Non-shipping packaged source verifier: `build/SourceProvenance`.
 - Package documentation: `docs` and the packable project's `README.md`.
 
 ## Commands
@@ -16,6 +17,12 @@ pwsh ./scripts/validate.ps1 -Configuration Release
 ```
 
 Use focused `dotnet test` or `dotnet build` commands while developing, then run the validation script once after the implementation is final. The script performs controlled restore, static checks, Release build, tests, package inspection, vulnerability checks, and package-consumer smoke.
+
+For source-provenance changes, start with `dotnet test tests/KeelMatrix.AuthSurface.Tests -c Release --filter FullyQualifiedName~SourceProvenanceTests`.
+Package inspection checks the exact DLL/PDB pair and every document against the
+explicit checkout commit or valid embedded source; it also runs fatal caller
+regressions. See the [source-provenance contract](docs/maintaining-release-workflow.md#packaged-source-provenance)
+for focused archive commands and the distinction between local Git and HTTP proof.
 
 For package classification changes, run `pwsh ./scripts/check-website-metadata.ps1` and `pwsh ./scripts/test-website-metadata.ps1` first. The root `keelmatrix.website.json` owns classification; see [package discovery metadata](docs/package-metadata.md) for source and archive validation.
 

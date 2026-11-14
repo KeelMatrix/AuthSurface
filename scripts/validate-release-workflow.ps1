@@ -196,6 +196,13 @@ if ($buildIndex -lt 0 -or $testIndex -lt $buildIndex -or $packIndex -lt $testInd
 }
 
 $releaseSteps = @([regex]::Split($releaseWorkflow, '(?m)(?=^      - )'))
+$inspectionSteps = @($releaseSteps | Where-Object { $_ -match 'inspect-package\.ps1' })
+if ($inspectionSteps.Count -ne 1 -or
+    $inspectionSteps[0] -notmatch '(?m)^          & \.\\scripts\\inspect-package\.ps1 -PackagePath \(Join-Path \$output \$expected\[0\]\) -SymbolPackagePath \(Join-Path \$output \$expected\[1\]\) -ExpectedVersion \$env:RELEASE_VERSION -RepositoryRoot \$env:GITHUB_WORKSPACE -ExpectedCommit ''\$\{\{ github\.sha \}\}''\s*\r?\n          if \(\$LASTEXITCODE -ne 0\)' -or
+    $inspectionSteps[0] -match '(?m)^        (?:continue-on-error|if):' -or
+    $releaseWorkflow.IndexOf('inspect-package.ps1') -lt $packIndex) {
+    throw 'Release must inspect the exact packaged pair at the checkout commit after pack, with fatal failure propagation.'
+}
 $publicationSteps = @($releaseSteps | Where-Object { $_ -match 'push-release-package\.ps1' })
 if ($publicationSteps.Count -ne 1 -or
     $publicationSteps[0] -notmatch '(?m)^          & \.\\scripts\\push-release-package\.ps1 -PackagePath \(Join-Path \$output "KeelMatrix\.AuthSurface\.\$\{env:RELEASE_VERSION\}\.nupkg"\)\s*\r?\n          if \(\$LASTEXITCODE -ne 0\)' -or

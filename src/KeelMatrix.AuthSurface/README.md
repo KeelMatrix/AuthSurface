@@ -149,6 +149,11 @@ AuthSurface does not execute authorization handlers, create users or claims, min
 
 ## Limitations, privacy, and compatibility
 
+Public 0.1.0 symbols match the library, but automatic source retrieval is broken.
+Use a local `v0.1.0` checkout or decompiled source when debugging that version.
+The corrected source build is unpublished. See the [source-provenance contract
+and workaround](https://github.com/KeelMatrix/AuthSurface/blob/main/docs/maintaining-release-workflow.md#packaged-source-provenance).
+
 The package targets `net8.0` and uses the `Microsoft.AspNetCore.App` framework reference. It does not require `WebApplicationFactory`, a test framework, a hosted service, middleware, a database, or a network service. Scan after the host has built its endpoint data sources. Dynamic policy resolution errors mean the application's provider could not resolve a named policy. Unsupported baseline versions require explicit migration; AuthSurface will not downgrade or regenerate them.
 
 AuthSurface requests a shared activation only after a nonempty runtime endpoint report is evaluated through policy verification, baseline creation, or baseline comparison. It passes no endpoint or authorization data to telemetry and does not request recurring heartbeats. The shared client owns telemetry opt-out, payload, identity, storage, and delivery behavior. The baseline itself may reveal internal architecture and should be handled accordingly. See [`PRIVACY.md`](https://github.com/KeelMatrix/AuthSurface/blob/main/PRIVACY.md) and [`docs/endpoint-identity.md`](https://github.com/KeelMatrix/AuthSurface/blob/main/docs/endpoint-identity.md) for the maintained details.

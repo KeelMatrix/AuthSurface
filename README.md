@@ -117,6 +117,11 @@ AuthSurface targets `net8.0` only. It records runtime authorization metadata and
 
 ## Troubleshooting
 
+Public 0.1.0 symbols match the library, but automatic source retrieval is broken.
+Use a local `v0.1.0` checkout or decompiled source when debugging that version.
+The corrected source build is unpublished. See the [source-provenance contract
+and workaround](docs/maintaining-release-workflow.md#packaged-source-provenance).
+
 For empty endpoint sets, policy-resolution errors, duplicate endpoint identity, and unsupported baseline versions, see the package README's [diagnostic troubleshooting](src/KeelMatrix.AuthSurface/README.md#troubleshooting) section.
 
 ## License

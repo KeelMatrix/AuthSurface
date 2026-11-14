@@ -32,6 +32,11 @@ failures. `scripts/inspect-package.ps1` uses the same checker for the actual
 and repository metadata. The tag-push publication job also invokes that
 inspector before publication.
 
+The inspector also requires the matching symbol archive and an explicit expected
+source commit. Its separate [source-provenance contract](maintaining-release-workflow.md#packaged-source-provenance)
+checks the packaged DLL/PDB and every source document. Passing metadata alone
+does not establish functional debugging sources.
+
 For focused archive inspection, pass the built artifacts to the checker:
 
 ```powershell

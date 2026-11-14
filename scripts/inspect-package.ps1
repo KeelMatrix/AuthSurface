@@ -5,7 +5,13 @@ param(
 
     [string] $SymbolPackagePath,
 
-    [string] $ExpectedVersion = '0.1.0'
+    [string] $ExpectedVersion = '0.1.0',
+
+    [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
+
+    [string] $ExpectedCommit,
+
+    [string] $VerifierPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build/SourceProvenance/bin/Release/net8.0/SourceProvenance.dll')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +22,10 @@ $metadataArchives = @($PackagePath)
 if ($SymbolPackagePath) { $metadataArchives += $SymbolPackagePath }
 & (Join-Path $PSScriptRoot 'check-website-metadata.ps1') -PackagePath $metadataArchives
 if ($LASTEXITCODE -ne 0) { throw 'Website package metadata inspection failed.' }
+
+if (-not $SymbolPackagePath) { throw 'Source provenance requires the matching symbol package.' }
+if (-not $ExpectedCommit) { throw 'Source provenance requires an explicit expected source commit.' }
+if (-not (Test-Path -LiteralPath $VerifierPath -PathType Leaf)) { throw "Source provenance verifier is not built: $VerifierPath" }
 
 function Get-PngDimensions([System.IO.Stream] $Stream) {
     $header = New-Object byte[] 24
@@ -181,3 +191,7 @@ if ($SymbolPackagePath) {
         $symbols.Dispose()
     }
 }
+
+& dotnet $VerifierPath $PackagePath $SymbolPackagePath $RepositoryRoot $ExpectedCommit
+if ($LASTEXITCODE -ne 0) { throw "Packaged source provenance failed with exit code $LASTEXITCODE." }
+Write-Output 'Packaged source provenance passed (local Git blobs and embedded sources; provider HTTP availability untested).'
