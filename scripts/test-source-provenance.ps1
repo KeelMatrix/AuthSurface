@@ -17,6 +17,7 @@ foreach ($name in @('AUTHSURFACE_SOURCE_ROOT', 'AUTHSURFACE_SOURCE_PRIMARY', 'AU
 }
 try {
     New-Item -ItemType Directory -Path (Join-Path $testRoot 'scripts'), (Join-Path $testRoot 'build') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $root 'Directory.Build.props') -Destination $testRoot
     $env:AUTHSURFACE_SOURCE_ROOT = $root
     $env:AUTHSURFACE_SOURCE_PRIMARY = (Resolve-Path -LiteralPath $PackagePath).Path
     $env:AUTHSURFACE_SOURCE_SYMBOLS = (Resolve-Path -LiteralPath $SymbolPackagePath).Path
@@ -72,7 +73,7 @@ function dotnet {
                 $step = $step.Replace("'`${{ github.sha }}'", '$env:AUTHSURFACE_SOURCE_COMMIT')
                 $child += @'
 $env:GITHUB_WORKSPACE = $PSScriptRoot
-$env:RELEASE_VERSION = '0.1.0'
+$env:RELEASE_VERSION = ([xml](Get-Content -LiteralPath (Join-Path $env:AUTHSURFACE_SOURCE_ROOT 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version
 $output = Join-Path $PSScriptRoot 'artifacts/packages'
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 Copy-Item -LiteralPath $env:AUTHSURFACE_SOURCE_PRIMARY, $env:AUTHSURFACE_SOURCE_SYMBOLS -Destination $output

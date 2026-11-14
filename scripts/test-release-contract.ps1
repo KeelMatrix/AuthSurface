@@ -95,7 +95,60 @@ Initial pre-release implementation.
     catch { $remediationRejected = $true }
     if (-not $remediationRejected) { throw 'Release mode accepted first-release remediation wording.' }
 
-    Write-Output 'Release contract tests passed: candidate, finalized main/release, impossible-date and duplicate-heading rejection, unfinished finalized rejection, tag/version mismatch, and remediation rejection.'
+    $firstFixedRejected = $false
+    Set-Content -LiteralPath (Join-Path $root 'CHANGELOG.md') -Value $finalized.Replace('### Added', '### Fixed') -Encoding utf8
+    try { & $contract -Root $root -Mode Release -Version '0.1.0' -Tag 'v0.1.0' }
+    catch { $firstFixedRejected = $true }
+    if (-not $firstFixedRejected) { throw 'The first public release accepted a Fixed category.' }
+
+    foreach ($laterVersion in @('0.1.1', '0.2.0', '1.0.0')) {
+        Set-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Value "<Project><PropertyGroup><Version>$laterVersion</Version></PropertyGroup></Project>" -Encoding utf8
+        foreach ($readmePath in @('README.md', 'src/KeelMatrix.AuthSurface/README.md')) {
+            Set-Content -LiteralPath (Join-Path $root $readmePath) -Value $install.Replace('0.1.0', $laterVersion) -Encoding utf8
+        }
+        $laterCandidate = "# Changelog`n`n## $laterVersion - Unreleased`n`n### Fixed`n`n- Corrects source loading from the preceding published version.`n`n" + $finalized.Substring($finalized.IndexOf('## [0.1.0]'))
+        Set-Content -LiteralPath (Join-Path $root 'CHANGELOG.md') -Value $laterCandidate -Encoding utf8
+        & $contract -Root $root -Mode Candidate -Version $laterVersion
+        & $contract -Root $root -Mode Main -Version $laterVersion
+        $laterPlannedRejected = $false
+        try { & $contract -Root $root -Mode Release -Version $laterVersion -Tag "v$laterVersion" }
+        catch { $laterPlannedRejected = $true }
+        if (-not $laterPlannedRejected) { throw "Release mode accepted planned $laterVersion." }
+
+        $laterFinal = $laterCandidate.Replace("## $laterVersion - Unreleased", "## [$laterVersion] - 2026-11-14")
+        foreach ($category in @('Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security')) {
+            Set-Content -LiteralPath (Join-Path $root 'CHANGELOG.md') -Value $laterFinal.Replace('### Fixed', "### $category") -Encoding utf8
+            & $contract -Root $root -Mode Main -Version $laterVersion
+            & $contract -Root $root -Mode Release -Version $laterVersion -Tag "v$laterVersion"
+        }
+        foreach ($invalidEntry in @(
+            $laterFinal.Replace('2026-11-14', '2026-02-30'),
+            $laterFinal.Replace('### Fixed', '### Internal'),
+            $laterFinal.Replace('### Fixed', ''),
+            $laterFinal.Replace('Corrects source', 'Pending release: corrects source'),
+            ($laterFinal + "`n## [$laterVersion] - 2026-11-14`n`n### Fixed`n`n- Duplicate entry.")
+        )) {
+            Set-Content -LiteralPath (Join-Path $root 'CHANGELOG.md') -Value $invalidEntry -Encoding utf8
+            foreach ($mode in @('Main', 'Release')) {
+                $laterInvalidRejected = $false
+                try { & $contract -Root $root -Mode $mode -Version $laterVersion -Tag "v$laterVersion" }
+                catch { $laterInvalidRejected = $true }
+                if (-not $laterInvalidRejected) { throw "$mode accepted an invalid later-release entry: $invalidEntry" }
+            }
+        }
+        Set-Content -LiteralPath (Join-Path $root 'CHANGELOG.md') -Value $laterFinal -Encoding utf8
+        $laterTagRejected = $false
+        try { & $contract -Root $root -Mode Release -Version $laterVersion -Tag 'v0.1.0' }
+        catch { $laterTagRejected = $true }
+        if (-not $laterTagRejected) { throw "Release mode accepted a historical tag for $laterVersion." }
+        Set-Content -LiteralPath (Join-Path $root 'README.md') -Value $install -Encoding utf8
+        $laterInstallRejected = $false
+        try { & $contract -Root $root -Mode Main -Version $laterVersion }
+        catch { $laterInstallRejected = $true }
+        if (-not $laterInstallRejected) { throw "Main mode accepted a stale install version for $laterVersion." }
+    }
+
+    Write-Output 'Release contract tests passed: first-release rules retained; later patch/minor/major categories, candidate/final states, dates, duplicates, unfinished wording, metadata/install and tag mismatch checks.'
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

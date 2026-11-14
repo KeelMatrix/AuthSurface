@@ -18,7 +18,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Nested PowerShell launch guard self-test faile
 if ($LASTEXITCODE -ne 0) { throw 'Nested PowerShell launch guard failed.' }
 $library = Join-Path $root 'src/KeelMatrix.AuthSurface/KeelMatrix.AuthSurface.csproj'
 $packageDirectory = Join-Path $root 'artifacts/package'
-$version = '0.1.0'
+$version = ([xml](Get-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version
 
 function Invoke-Gate([string] $Name, [scriptblock] $Action) {
     $timer = [System.Diagnostics.Stopwatch]::StartNew()

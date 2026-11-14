@@ -5,7 +5,7 @@ param(
 
     [string] $SymbolPackagePath,
 
-    [string] $ExpectedVersion = '0.1.0',
+    [string] $ExpectedVersion = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot '../Directory.Build.props') -Raw)).Project.PropertyGroup.Version,
 
     [string] $RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
 

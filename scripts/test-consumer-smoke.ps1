@@ -6,13 +6,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $staleRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('authsurface-stale-cache-' + [guid]::NewGuid().ToString('N'))
-$stalePackageDirectory = Join-Path $staleRoot 'keelmatrix.authsurface\0.1.0'
+$packageVersion = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot '../Directory.Build.props') -Raw)).Project.PropertyGroup.Version
+$stalePackageDirectory = Join-Path $staleRoot "keelmatrix.authsurface/$packageVersion"
 $oldCache = $env:NUGET_PACKAGES
 
 try {
     New-Item -ItemType Directory -Path $stalePackageDirectory -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $stalePackageDirectory 'keelmatrix.authsurface.0.1.0.nupkg') -Value 'stale same-version package bytes' -Encoding utf8
-    Set-Content -LiteralPath (Join-Path $stalePackageDirectory 'keelmatrix.authsurface.0.1.0.nupkg.sha512') -Value 'c3RhbGU=' -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $stalePackageDirectory "keelmatrix.authsurface.$packageVersion.nupkg") -Value 'stale same-version package bytes' -Encoding utf8
+    Set-Content -LiteralPath (Join-Path $stalePackageDirectory "keelmatrix.authsurface.$packageVersion.nupkg.sha512") -Value 'c3RhbGU=' -Encoding ascii
     $env:NUGET_PACKAGES = $staleRoot
 
     & (Join-Path $PSScriptRoot 'consumer-smoke.ps1') -PackagePath $PackagePath

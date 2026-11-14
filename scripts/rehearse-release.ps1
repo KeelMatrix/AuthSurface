@@ -6,7 +6,7 @@ param(
     [ValidateSet('Candidate', 'Main')]
     [string] $ContractMode = 'Main',
 
-    [string] $Version = '0.1.0',
+    [string] $Version,
 
     [string] $Root = (Split-Path -Parent $PSScriptRoot)
 )
@@ -17,6 +17,9 @@ $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DO_NOT_TRACK = '1'
 
 $root = (Resolve-Path -LiteralPath $Root).Path
+if (-not $Version) {
+    $Version = ([xml](Get-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version
+}
 $output = Join-Path $root 'artifacts/release-rehearsal'
 $solution = '.\KeelMatrix.AuthSurface.sln'
 $library = '.\src\KeelMatrix.AuthSurface\KeelMatrix.AuthSurface.csproj'

@@ -4,8 +4,12 @@ AuthSurface tests the runtime ASP.NET Core authorization surface. It discovers e
 
 ## Install
 
+**0.1.1 is an unpublished candidate.** Build and pack this checkout, then use
+the local package feed below (adjust its path for your consumer project).
+The published version remains 0.1.0.
+
 ```powershell
-dotnet add package KeelMatrix.AuthSurface --version 0.1.0
+dotnet add package KeelMatrix.AuthSurface --version 0.1.1 --source ./artifacts/package
 ```
 
 ## Quick Start
@@ -119,7 +123,8 @@ AuthSurface targets `net8.0` only. It records runtime authorization metadata and
 
 Public 0.1.0 symbols match the library, but automatic source retrieval is broken.
 Use a local `v0.1.0` checkout or decompiled source when debugging that version.
-The corrected source build is unpublished. See the [source-provenance contract
+The unpublished 0.1.1 candidate corrects authored source paths and embeds
+generated source, with no public API or runtime behavior changes. See the [source-provenance contract
 and workaround](docs/maintaining-release-workflow.md#packaged-source-provenance).
 
 For empty endpoint sets, policy-resolution errors, duplicate endpoint identity, and unsupported baseline versions, see the package README's [diagnostic troubleshooting](src/KeelMatrix.AuthSurface/README.md#troubleshooting) section.

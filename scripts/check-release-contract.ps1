@@ -100,12 +100,17 @@ function Assert-FinalizedEntry([string] $HeadingValue, [string] $EntryText, [str
     }
 
     $categories = @([regex]::Matches($EntryText, '(?m)^###\s+(.+?)\s*$') | ForEach-Object { $_.Groups[1].Value.Trim() })
-    if ($categories.Count -ne 1 -or $categories[0] -ne 'Added') {
-        throw "The first public release changelog entry must contain only an Added section."
-    }
+    if ($ReleaseVersion -eq '0.1.0') {
+        if ($categories.Count -ne 1 -or $categories[0] -ne 'Added') {
+            throw "The first public release changelog entry must contain only an Added section."
+        }
 
-    if ($EntryText -match '(?i)\b(?:now|no longer|previously|formerly|used to|fixed|fixes|corrected|resolved|addressed|this removes|this fixes|changed from)\b') {
-        throw 'The first public release changelog entry contains pre-release remediation wording.'
+        if ($EntryText -match '(?i)\b(?:now|no longer|previously|formerly|used to|fixed|fixes|corrected|resolved|addressed|this removes|this fixes|changed from)\b') {
+            throw 'The first public release changelog entry contains pre-release remediation wording.'
+        }
+    }
+    elseif ($categories.Count -eq 0 -or @($categories | Where-Object { $_ -cnotin @('Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security') }).Count -gt 0) {
+        throw 'A subsequent release changelog entry must use Keep a Changelog categories.'
     }
 }
 

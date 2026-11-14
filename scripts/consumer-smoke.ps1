@@ -9,7 +9,7 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('authsurface-consumer-' + [guid]::NewGuid().ToString('N'))
 $feed = Join-Path $root 'feed'
 $project = Join-Path $root 'consumer'
-$packageVersion = '0.1.0'
+$packageVersion = ([xml](Get-Content -LiteralPath (Join-Path $repositoryRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version
 $packageId = 'KeelMatrix.AuthSurface'
 
 if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {

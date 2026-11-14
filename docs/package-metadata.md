@@ -41,8 +41,8 @@ For focused archive inspection, pass the built artifacts to the checker:
 
 ```powershell
 ./scripts/check-website-metadata.ps1 -PackagePath @(
-    './artifacts/package/KeelMatrix.AuthSurface.0.1.0.nupkg',
-    './artifacts/package/KeelMatrix.AuthSurface.0.1.0.snupkg'
+    './artifacts/package/KeelMatrix.AuthSurface.0.1.1.nupkg',
+    './artifacts/package/KeelMatrix.AuthSurface.0.1.1.snupkg'
 )
 ```
 

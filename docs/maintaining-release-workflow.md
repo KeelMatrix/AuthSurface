@@ -3,6 +3,24 @@
 This document owns the packaged source-provenance contract and explains release
 inspection, publication, historical symbol recovery, and workflow maintenance.
 
+## Candidate version
+
+`Directory.Build.props` owns the current package version. Validation, inspection,
+consumer smoke, and rehearsal use that version by default; release preparation
+also checks it against the explicit tag version. `PackageVersion` follows
+`Version`, `FileVersion` identifies the build, and `AssemblyVersion` stays at
+`0.1.0.0` for patch compatibility.
+
+The current **0.1.1 candidate is unpublished**. Its only consumer-facing change
+from public 0.1.0 is the debugging correction described below. The public API,
+baseline format, dependencies, and runtime behavior are unchanged. Candidate
+installation examples use a local feed. The changelog intentionally remains
+unreleased and undated; release mode rejects it until separately finalized.
+Finalization requires a truthful dated entry, verification of its resulting
+commit, and separate release authorization before any tag or publication.
+The initial 0.1.0 entry permits only `Added`; later entries use the applicable
+Keep a Changelog categories, including `Fixed` for this correction.
+
 ## Packaged source provenance
 
 Every document in the packaged portable PDB must supply exact source bytes at
@@ -36,8 +54,8 @@ From the repository root, after building and packing:
 ```powershell
 $commit = (git rev-parse HEAD).Trim()
 pwsh -NoProfile -File ./scripts/inspect-package.ps1 `
-  -PackagePath ./artifacts/package/KeelMatrix.AuthSurface.0.1.0.nupkg `
-  -SymbolPackagePath ./artifacts/package/KeelMatrix.AuthSurface.0.1.0.snupkg `
+  -PackagePath ./artifacts/package/KeelMatrix.AuthSurface.0.1.1.nupkg `
+  -SymbolPackagePath ./artifacts/package/KeelMatrix.AuthSurface.0.1.1.snupkg `
   -RepositoryRoot . -ExpectedCommit $commit
 ```
 
@@ -65,11 +83,12 @@ that version, check out `v0.1.0` and configure the debugger to use the local
 `src/KeelMatrix.AuthSurface` directory, or use decompiled source. This does not
 provide the original generated files.
 
-The corrected source build and provenance gate are **unpublished**. The local
-artifact name still uses the current development version; it is not a replacement
-for the public 0.1.0 bytes. A correction requires a newly built matching DLL/PDB
-pair and a separate publication/version decision. Preserve the original tag and
-saved recovery archive. Re-uploading that archive cannot repair its source map.
+The **unpublished 0.1.1 candidate** preserves the authored repository-relative
+paths and embeds generated source in its newly built matching DLL/PDB pair.
+The complete source gate applies to those new bytes; it does not repair or
+replace public 0.1.0. Preserve the original tag and saved recovery archive.
+Re-uploading that archive cannot repair its source map. Publishing 0.1.1 remains
+a separate action after candidate review and changelog finalization.
 
 Format references: [SourceLink mapping](https://github.com/dotnet/designs/blob/main/accepted/2020/diagnostics/source-link.md),
 [portable PDB records](https://github.com/dotnet/runtime/blob/main/docs/design/specs/PortablePdb-Metadata.md),

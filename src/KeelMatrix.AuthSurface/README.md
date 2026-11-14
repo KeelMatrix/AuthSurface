@@ -4,8 +4,12 @@
 
 ## Install
 
+**0.1.1 is an unpublished candidate.** Build and pack this checkout, then use
+the local package feed below (adjust its path for your consumer project).
+The published version remains 0.1.0.
+
 ```powershell
-dotnet add package KeelMatrix.AuthSurface --version 0.1.0
+dotnet add package KeelMatrix.AuthSurface --version 0.1.1 --source ./artifacts/package
 ```
 
 ## Quick start
@@ -151,7 +155,8 @@ AuthSurface does not execute authorization handlers, create users or claims, min
 
 Public 0.1.0 symbols match the library, but automatic source retrieval is broken.
 Use a local `v0.1.0` checkout or decompiled source when debugging that version.
-The corrected source build is unpublished. See the [source-provenance contract
+The unpublished 0.1.1 candidate corrects authored source paths and embeds
+generated source, with no public API or runtime behavior changes. See the [source-provenance contract
 and workaround](https://github.com/KeelMatrix/AuthSurface/blob/main/docs/maintaining-release-workflow.md#packaged-source-provenance).
 
 The package targets `net8.0` and uses the `Microsoft.AspNetCore.App` framework reference. It does not require `WebApplicationFactory`, a test framework, a hosted service, middleware, a database, or a network service. Scan after the host has built its endpoint data sources. Dynamic policy resolution errors mean the application's provider could not resolve a named policy. Unsupported baseline versions require explicit migration; AuthSurface will not downgrade or regenerate them.
