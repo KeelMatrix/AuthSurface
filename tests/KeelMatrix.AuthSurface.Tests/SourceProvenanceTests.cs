@@ -142,6 +142,20 @@ public sealed class SourceProvenanceTests
     }
 
     [Theory]
+    [InlineData("/_/src/Library/nested ü/File.cs", "src/Library/nested%20%C3%BC/File.cs")]
+    [InlineData("/_/src/Library/nested u\u0308/File.cs", "src/Library/nested%20u%CC%88/File.cs")]
+    public void AuthoredEmbeddingPreservesTheActualUnicodeMapping(string name, string escapedPath)
+    {
+        Report report = Check(Create([new(name, Source, Embed(Source, true))], Map("/_/*", UrlRoot + "*")),
+            _ => throw new InvalidOperationException("Embedded source must not claim Git retrieval."));
+        Assert.True(report.Success);
+        DocumentResult row = Assert.Single(report.Documents);
+        Assert.Equal("embedded", row.Channel);
+        Assert.Equal(UrlRoot + escapedPath, row.Url);
+        Assert.Null(row.MappingError);
+    }
+
+    [Theory]
     [InlineData("header")]
     [InlineData("format")]
     [InlineData("length-long")]
@@ -266,7 +280,20 @@ public sealed class SourceProvenanceTests
         Report report = Verifier.Verify(File.ReadAllBytes(Path.Combine(project, "bin/Release/net8.0/Library.dll")),
             File.ReadAllBytes(Path.Combine(project, "bin/Release/net8.0/Library.pdb")), commit, path => Verifier.ReadGitBlob(root, commit, path));
         Assert.True(report.Success, JsonSerializer.Serialize(report));
-        Assert.Equal(4, report.Documents.Count(row => row.Channel.StartsWith("git-blob", StringComparison.Ordinal)));
+        foreach (string path in new[] { "Root.cs", "src/Library/Project.cs", "shared/Linked.cs" })
+        {
+            DocumentResult authored = Assert.Single(report.Documents.Where(row => row.Name == "/_/" + path));
+            Assert.True(authored.Success);
+            Assert.StartsWith("git-blob", authored.Channel, StringComparison.Ordinal);
+        }
+        // A tracked Unicode path can be classified as untracked by source-control
+        // integration on a filesystem with a different Unicode normalization form.
+        // Either exact source channel is valid; normalization here only identifies
+        // the fixture row, never changes the verifier's Git path or source bytes.
+        DocumentResult nested = Assert.Single(report.Documents.Where(row => row.Name.Normalize(NormalizationForm.FormC) == "/_/src/Library/nested space ü/Nested.cs"));
+        Assert.True(nested.Success);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(project, "nested space ü", "Nested.cs")))).ToLowerInvariant(), nested.Checksum);
+        Assert.True(nested.Channel == "embedded" || nested.Channel.StartsWith("git-blob", StringComparison.Ordinal));
         foreach (string generated in new[] { "GlobalUsings.g.cs", "AssemblyAttributes.cs", "AssemblyInfo.cs" })
         {
             Assert.Contains(report.Documents, row => row.Name.EndsWith(generated, StringComparison.Ordinal) && row.Channel == "embedded" && row.Success);
@@ -286,7 +313,7 @@ public sealed class SourceProvenanceTests
             byte[] bytes = embedded is not null ? Verifier.DecodeEmbedded(embedded) : Verifier.ReadGitBlob(root, commit, Verifier.RepositoryPath(row.Url!, commit));
             specs.Add(new(name, bytes, embedded));
         }
-        foreach (DocumentSpec generated in specs.Where(spec => spec.Embedded is not null))
+        foreach (DocumentSpec generated in specs.Where(spec => spec.Name.Contains("/obj/", StringComparison.Ordinal)))
         {
             Pair removed = Create(specs.Select(spec => spec == generated ? spec with { Embedded = null } : spec).ToArray(), sourceLink);
             Report failure = Verifier.Verify(removed.Dll, removed.Pdb, commit, path => Verifier.ReadGitBlob(root, commit, path));
