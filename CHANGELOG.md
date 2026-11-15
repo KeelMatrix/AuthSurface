@@ -2,15 +2,11 @@
 
 All notable changes to this package will be documented here.
 
-## 0.1.1 - Unreleased
+## [0.1.1] - 2026-11-15
 
 ### Fixed
 
-- Corrects automatic source loading during debugging with repository-relative authored source paths and embedded generated source in the matching library and symbols. The public API and runtime behavior are unchanged; the published 0.1.0 files retain their source-loading limitation.
-
-### Added
-
-- Documents exact-version installation from a mapped local package feed with public dependencies and guidance for stale same-version cache entries.
+- Corrects automatic source loading during debugging with repository-relative authored source paths and embedded generated source in the matching symbols; public API and runtime behavior are unchanged.
 
 ## [0.1.0] - 2026-11-11
 

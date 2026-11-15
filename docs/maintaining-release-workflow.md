@@ -3,7 +3,7 @@
 This document owns the controlled build-input/session and packaged source-provenance contracts and explains release
 inspection, publication, historical symbol recovery, and workflow maintenance.
 
-## Candidate version
+## Release version
 
 `Directory.Build.props` owns the current package version. Validation, inspection,
 consumer smoke, and rehearsal use that version by default; release preparation
@@ -11,13 +11,12 @@ also checks it against the explicit tag version. `PackageVersion` follows
 `Version`, `FileVersion` identifies the build, and `AssemblyVersion` stays at
 `0.1.0.0` for patch compatibility.
 
-The current **0.1.1 candidate is unpublished**. It includes the debugging correction
-described below and documents installation from the candidate feed with public dependencies. The public API,
-baseline format, dependencies, and runtime behavior are unchanged. Candidate
-installation examples use a local feed. The changelog intentionally remains
-unreleased and undated; release mode rejects it until separately finalized.
-Finalization requires a truthful dated entry, verification of its resulting
-commit, and separate release authorization before any tag or publication.
+Version **0.1.1** includes the debugging correction described below. The public API,
+baseline format, dependencies, and runtime behavior are unchanged. The READMEs
+document installation from nuget.org and from a local build with public dependencies.
+`CHANGELOG.md` owns the finalized release entry and intended date, 2026-11-15.
+Finalization alone does not publish the package: verify the resulting commit and
+obtain separate release authorization before any tag or publication.
 The initial 0.1.0 entry permits only `Added`; later entries use the applicable
 Keep a Changelog categories, including `Fixed` for this correction.
 
@@ -145,12 +144,12 @@ that version, check out `v0.1.0` and configure the debugger to use the local
 `src/KeelMatrix.AuthSurface` directory, or use decompiled source. This does not
 provide the original generated files.
 
-The **unpublished 0.1.1 candidate** preserves the authored repository-relative
+Version **0.1.1** preserves the authored repository-relative
 paths and embeds generated source in its newly built matching DLL/PDB pair.
 The complete source gate applies to those new bytes; it does not repair or
 replace public 0.1.0. Preserve the original tag and saved recovery archive.
 Re-uploading that archive cannot repair its source map. Publishing 0.1.1 remains
-a separate action after candidate review and changelog finalization.
+a separate action requiring authorization for the verified finalized commit.
 
 Format references: [SourceLink mapping](https://github.com/dotnet/designs/blob/main/accepted/2020/diagnostics/source-link.md),
 [portable PDB records](https://github.com/dotnet/runtime/blob/main/docs/design/specs/PortablePdb-Metadata.md),

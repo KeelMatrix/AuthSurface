@@ -4,8 +4,9 @@ AuthSurface tests the runtime ASP.NET Core authorization surface. It discovers e
 
 ## Install
 
-**0.1.1 is an unpublished candidate.** The published version remains 0.1.0.
-Build and pack this checkout with `pwsh ./scripts/validate.ps1 -Configuration Release`.
+Install version 0.1.1 from nuget.org with `dotnet add package KeelMatrix.AuthSurface --version '[0.1.1]'`.
+
+To install a local build, build and pack this checkout with `pwsh ./scripts/validate.ps1 -Configuration Release`.
 In your consumer project directory, save this as `NuGet.config`. Adjust only the
 `authsurface-candidate` feed value to your built `artifacts/package` folder;
 relative paths are resolved from this config file. Keep both sources and mappings.
@@ -38,9 +39,9 @@ dotnet restore --configfile ./NuGet.config
 ```
 
 The bracketed version is an exact NuGet range; a feed containing only another
-version fails restore. The first command adds the package reference. Restore obtains this candidate
+version fails restore. The first command adds the package reference. Restore obtains this local build
 from the local feed and its dependencies from nuget.org. For a stale same-version
-candidate in your global cache, set `NUGET_PACKAGES` to a separate empty directory
+build in your global cache, set `NUGET_PACKAGES` to a separate empty directory
 before restore; you do not need to clear your shared cache. Return to the consumer
 directory before repeating these commands so the project and config are selected.
 
@@ -155,7 +156,7 @@ AuthSurface targets `net8.0` only. It records runtime authorization metadata and
 
 Public 0.1.0 symbols match the library, but automatic source retrieval is broken.
 Use a local `v0.1.0` checkout or decompiled source when debugging that version.
-The unpublished 0.1.1 candidate corrects authored source paths and embeds
+Version 0.1.1 corrects authored source paths and embeds
 generated source, with no public API or runtime behavior changes. See the [source-provenance contract
 and workaround](docs/maintaining-release-workflow.md#packaged-source-provenance).
 
